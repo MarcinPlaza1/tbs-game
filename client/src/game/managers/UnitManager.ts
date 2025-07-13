@@ -7,7 +7,7 @@ import {
   Mesh,
   Animation,
 } from '@babylonjs/core';
-import { Unit as UnitSchema } from '../../types/gameServer';
+import type { Unit as UnitSchema } from '../../types/gameServer';
 import { UnitType } from '@tbs/shared';
 
 interface UnitMesh {
