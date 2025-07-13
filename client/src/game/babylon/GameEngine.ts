@@ -46,7 +46,7 @@ export class GameEngine {
     this.mapManager = new MapManager(this.scene);
     this.unitManager = new UnitManager(this.scene);
     this.inputManager = new InputManager(this.scene, this.camera);
-    this.uiManager = new UIManager(this.scene);
+    this.uiManager = new UIManager();
 
     // Handle window resize
     window.addEventListener('resize', () => {
@@ -117,13 +117,23 @@ export class GameEngine {
   }
 
   updateGameState(state: GameState): void {
+    // Guard against invalid state
+    if (!state) {
+      console.warn('⚠️ GameEngine: state is undefined/null, skipping update');
+      return;
+    }
+
     // Update map if needed
     if (!this.mapManager.isInitialized()) {
       this.mapManager.createMap(state.mapWidth, state.mapHeight);
     }
 
-    // Update units
-    this.unitManager.updateUnits(state.units);
+    // Update units with null check
+    if (state.units) {
+      this.unitManager.updateUnits(state.units);
+    } else {
+      console.warn('⚠️ GameEngine: state.units is undefined, skipping units update');
+    }
 
     // Update UI
     this.uiManager.updateGameInfo({

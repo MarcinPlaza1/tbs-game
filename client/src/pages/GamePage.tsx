@@ -24,6 +24,8 @@ function GamePage() {
   const [loadingStage, setLoadingStage] = useState('');
   const [isGameReady, setIsGameReady] = useState(false);
   const [gameActivated, setGameActivated] = useState(false);
+  const [showUI, setShowUI] = useState(true);
+  const [showTopBar, setShowTopBar] = useState(true);
   
   const user = useAuthStore((state) => state.user);
   const { data: gameData } = trpc.game.get.useQuery({ gameId: gameId! });
@@ -145,6 +147,7 @@ function GamePage() {
             mapWidth: 20,
             mapHeight: 20,
             players: {},
+            units: new Map(), // Add empty units map to prevent errors
             turnNumber: message.turnNumber || 1,
             currentPlayerIndex: 0
           };
@@ -310,45 +313,47 @@ function GamePage() {
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Fixed Game Controls Bar */}
-      <div className="bg-gray-800 p-4 flex justify-between items-center">
-        <div className="flex gap-4">
-          <button 
-            onClick={handlePlayerReady} 
-            disabled={!isGameReady || gameActivated}
-            className={`px-6 py-2 rounded font-semibold transition-colors ${
-              !isGameReady 
-                ? 'bg-gray-500 cursor-not-allowed text-gray-300' 
-                : gameActivated 
-                  ? 'bg-green-600 text-white'
-                  : 'bg-blue-600 hover:bg-blue-700 text-white'
-            }`}
-          >
-            {gameActivated ? '✅ Ready' : !isGameReady ? '⏳ Loading...' : '🎮 Ready'}
-          </button>
-          <button 
-            onClick={handleEndTurn} 
-            disabled={!gameActivated}
-            className={`px-6 py-2 rounded font-semibold transition-colors ${
-              gameActivated 
-                ? 'bg-gray-600 hover:bg-gray-700 text-white' 
-                : 'bg-gray-500 cursor-not-allowed text-gray-300'
-            }`}
-          >
-            ⏭️ End Turn
-          </button>
+      {/* Minimal Game Controls Bar */}
+      {showTopBar && (
+        <div className="bg-gray-800 px-4 py-2 flex justify-between items-center">
+          <div className="flex gap-3">
+            <button 
+              onClick={handlePlayerReady} 
+              disabled={!isGameReady || gameActivated}
+              className={`px-4 py-1 rounded text-sm font-semibold transition-colors ${
+                !isGameReady 
+                  ? 'bg-gray-500 cursor-not-allowed text-gray-300' 
+                  : gameActivated 
+                    ? 'bg-green-600 text-white'
+                    : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
+            >
+              {gameActivated ? '✅ Ready' : !isGameReady ? '⏳ Loading...' : '🎮 Ready'}
+            </button>
+            <button 
+              onClick={handleEndTurn} 
+              disabled={!gameActivated}
+              className={`px-4 py-1 rounded text-sm font-semibold transition-colors ${
+                gameActivated 
+                  ? 'bg-gray-600 hover:bg-gray-700 text-white' 
+                  : 'bg-gray-500 cursor-not-allowed text-gray-300'
+              }`}
+            >
+              ⏭️ End Turn
+            </button>
+          </div>
+          
+          {/* Compact status info */}
+          <div className="text-white text-xs">
+            {gameActivated && gameState && (
+              <span>{gameState.status} | T:{gameState.turnNumber}</span>
+            )}
+            {!gameActivated && (
+              <span>{isGameReady ? 'Ready' : `${loadingProgress}%`}</span>
+            )}
+          </div>
         </div>
-        
-        <div className="text-white text-sm">
-          {gameActivated && gameState && (
-            <span>Status: <strong>{gameState.status}</strong> | Turn: <strong>{gameState.turnNumber}</strong></span>
-          )}
-          {!gameActivated && (
-            <span>Engine: <strong>{isGameReady ? 'Ready for Activation' : `Loading ${loadingProgress}%`}</strong></span>
-          )}
-          <span className="ml-4">Game: {gameId?.slice(-8)}</span>
-        </div>
-      </div>
+      )}
       
       {/* Main Game Area */}
       <div className="flex flex-1">
@@ -405,30 +410,54 @@ function GamePage() {
             </div>
           )}
           
-          {/* Game Info Overlay */}
+          {/* UI Toggle Button */}
           <div className="absolute top-4 left-4">
-            <div className="bg-black bg-opacity-75 text-white p-3 rounded text-sm">
-              {gameState && (
-                <>
-                  <p>Phase: {gameState.phase}</p>
-                  <p>Players: {Object.keys(gameState.players || {}).length}</p>
-                  <p>Map: {gameState.mapWidth}x{gameState.mapHeight}</p>
-                </>
-              )}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowUI(!showUI)}
+                className="bg-black bg-opacity-60 hover:bg-opacity-80 text-white p-2 rounded-lg text-xs backdrop-blur-sm transition-all"
+                title={showUI ? "Hide UI" : "Show UI"}
+              >
+                {showUI ? "👁️ Hide UI" : "👁️ Show UI"}
+              </button>
+              <button
+                onClick={() => setShowTopBar(!showTopBar)}
+                className="bg-black bg-opacity-60 hover:bg-opacity-80 text-white p-2 rounded-lg text-xs backdrop-blur-sm transition-all"
+                title={showTopBar ? "Hide Controls" : "Show Controls"}
+              >
+                {showTopBar ? "⬆️ Hide Bar" : "⬆️ Show Bar"}
+              </button>
             </div>
           </div>
-          
-          {/* Debug Panel - collapsible */}
-          <div className="absolute top-4 right-4">
-            <details className="card bg-opacity-90">
-              <summary className="cursor-pointer font-bold">Debug Log</summary>
-              <div className="mt-2 max-h-40 overflow-y-auto">
-                {connectionLog.slice(-10).map((log, index) => (
-                  <div key={index} className="text-xs text-gray-300 font-mono">{log}</div>
-                ))}
+
+          {showUI && (
+            <>
+              {/* Compact Game Info Overlay */}
+              <div className="absolute top-4 right-4">
+                <div className="bg-black bg-opacity-60 text-white px-3 py-2 rounded-lg text-xs backdrop-blur-sm">
+                  {gameState && (
+                    <div className="flex gap-4 items-center">
+                      <span>Phase: <strong>{gameState.phase}</strong></span>
+                      <span>Players: <strong>{Object.keys(gameState.players || {}).length}</strong></span>
+                      <span>Map: <strong>{gameState.mapWidth}x{gameState.mapHeight}</strong></span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </details>
-          </div>
+              
+              {/* Debug Panel - collapsible */}
+              <div className="absolute bottom-4 right-4">
+                <details className="bg-black bg-opacity-60 text-white p-2 rounded text-xs">
+                  <summary className="cursor-pointer font-bold">🐛 Debug</summary>
+                  <div className="mt-2 max-h-32 overflow-y-auto w-64">
+                    {connectionLog.slice(-8).map((log, index) => (
+                      <div key={index} className="text-xs text-gray-300 font-mono mb-1">{log}</div>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Sidebar */}

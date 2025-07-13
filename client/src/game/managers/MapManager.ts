@@ -5,7 +5,6 @@ import {
   Color3,
   Vector3,
   Mesh,
-  InstancedMesh,
 } from '@babylonjs/core';
 import { GridMaterial } from '@babylonjs/materials';
 import { TileType } from '@tbs/shared';

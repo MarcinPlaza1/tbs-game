@@ -1,6 +1,4 @@
-import {
-  Scene,
-} from '@babylonjs/core';
+
 import {
   AdvancedDynamicTexture,
   Rectangle,
@@ -9,8 +7,6 @@ import {
   StackPanel,
   Control,
 } from '@babylonjs/gui';
-import { GamePhase } from '@tbs/shared';
-
 interface GameInfo {
   currentPlayer: number;
   turnNumber: number;
@@ -18,59 +14,16 @@ interface GameInfo {
 }
 
 export class UIManager {
-  private scene: Scene;
   private advancedTexture: AdvancedDynamicTexture;
-  private gameInfoPanel: Rectangle;
-  private turnText: TextBlock;
-  private phaseText: TextBlock;
-  private actionPanel: StackPanel;
+  private actionPanel!: StackPanel;
 
-  constructor(scene: Scene) {
-    this.scene = scene;
+  constructor() {
     this.advancedTexture = AdvancedDynamicTexture.CreateFullscreenUI('UI');
     
-    this.createGameInfoPanel();
     this.createActionPanel();
   }
 
-  private createGameInfoPanel(): void {
-    // Create main panel
-    this.gameInfoPanel = new Rectangle('gameInfoPanel');
-    this.gameInfoPanel.width = '300px';
-    this.gameInfoPanel.height = '100px';
-    this.gameInfoPanel.cornerRadius = 10;
-    this.gameInfoPanel.color = 'white';
-    this.gameInfoPanel.thickness = 2;
-    this.gameInfoPanel.background = 'rgba(0, 0, 0, 0.7)';
-    this.gameInfoPanel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
-    this.gameInfoPanel.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
-    this.gameInfoPanel.left = 20;
-    this.gameInfoPanel.top = 20;
-    
-    this.advancedTexture.addControl(this.gameInfoPanel);
-    
-    // Create stack panel for text
-    const stackPanel = new StackPanel();
-    stackPanel.isVertical = true;
-    stackPanel.paddingTop = '10px';
-    this.gameInfoPanel.addControl(stackPanel);
-    
-    // Turn text
-    this.turnText = new TextBlock();
-    this.turnText.text = 'Turn: 1';
-    this.turnText.color = 'white';
-    this.turnText.fontSize = 20;
-    this.turnText.height = '30px';
-    stackPanel.addControl(this.turnText);
-    
-    // Phase text
-    this.phaseText = new TextBlock();
-    this.phaseText.text = 'Phase: Deployment';
-    this.phaseText.color = 'white';
-    this.phaseText.fontSize = 16;
-    this.phaseText.height = '25px';
-    stackPanel.addControl(this.phaseText);
-  }
+
 
   private createActionPanel(): void {
     // Create action panel on the right
@@ -85,20 +38,9 @@ export class UIManager {
     this.advancedTexture.addControl(this.actionPanel);
   }
 
-  updateGameInfo(info: GameInfo): void {
-    this.turnText.text = `Turn: ${info.turnNumber}`;
-    this.phaseText.text = `Phase: ${this.formatPhase(info.phase)}`;
-  }
-
-  private formatPhase(phase: string): string {
-    switch (phase) {
-      case GamePhase.DEPLOYMENT:
-        return 'Deployment';
-      case GamePhase.BATTLE:
-        return 'Battle';
-      default:
-        return phase;
-    }
+  updateGameInfo(_info: GameInfo): void {
+    // Turn and phase info panel has been removed
+    // This method is kept for compatibility but does nothing
   }
 
   showUnitActions(unitId: string, actions: string[]): void {

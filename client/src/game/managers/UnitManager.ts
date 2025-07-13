@@ -27,6 +27,12 @@ export class UnitManager {
   }
 
   updateUnits(unitsData: Map<string, UnitSchema>): void {
+    // Guard against undefined/null unitsData
+    if (!unitsData) {
+      console.warn('⚠️ UnitManager: unitsData is undefined/null, skipping update');
+      return;
+    }
+
     // Remove units that no longer exist
     for (const [id] of this.units) {
       if (!unitsData.has(id)) {

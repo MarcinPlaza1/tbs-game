@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../trpc';
 import { games, gamePlayers } from '../../db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 
 const createGameSchema = z.object({

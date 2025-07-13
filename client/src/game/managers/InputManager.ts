@@ -2,11 +2,9 @@ import {
   Scene,
   Camera,
   Vector3,
-  Ray,
   PointerEventTypes,
   PointerInfo,
   KeyboardEventTypes,
-  KeyboardInfo,
 } from '@babylonjs/core';
 
 export class InputManager {
@@ -128,7 +126,7 @@ export class InputManager {
     }
   }
 
-  private handlePointerMove(pointerInfo: PointerInfo): void {
+  private handlePointerMove(_pointerInfo: PointerInfo): void {
     if (this.isRightMouseDown) {
       const deltaX = this.scene.pointerX - this.lastPointerX;
       const deltaY = this.scene.pointerY - this.lastPointerY;
