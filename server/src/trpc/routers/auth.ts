@@ -3,10 +3,11 @@ import bcrypt from 'bcrypt';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { TRPCError } from '@trpc/server';
 import { router, publicProcedure } from '../trpc';
-import { users, refreshTokens, passwordResetTokens } from '../../db/schema';
+import { users, refreshTokens, passwordResetTokens, csrfTokens } from '../../db/schema';
 import { eq, lt } from 'drizzle-orm';
 import { env } from '../../config/env';
 import { randomBytes } from 'crypto';
+import { checkRateLimit } from '../middleware/simpleRateLimit';
 
 const registerSchema = z.object({
   username: z.string().min(3).max(50),
@@ -56,6 +57,10 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { username, email, password } = input;
 
+      // Rate limiting
+      const identifier = ctx.user?.id || 'anonymous';
+      checkRateLimit('auth.register', identifier);
+
       // Check if user already exists
       const existingUser = await ctx.db.query.users.findFirst({
         where: eq(users.username, username),
@@ -72,12 +77,18 @@ export const authRouter = router({
       const passwordHash = await bcrypt.hash(password, 10);
 
       // Create user
+      // Generate email verification token
+      const emailVerificationToken = randomBytes(32).toString('hex');
+      const emailVerificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
       const [newUser] = await ctx.db
         .insert(users)
         .values({
           username,
           email,
           passwordHash,
+          emailVerificationToken,
+          emailVerificationTokenExpiry,
         })
         .returning();
 
@@ -106,6 +117,10 @@ export const authRouter = router({
     .input(loginSchema)
     .mutation(async ({ ctx, input }) => {
       const { username, password } = input;
+
+      // Rate limiting
+      const identifier = ctx.user?.id || username;
+      checkRateLimit('auth.login', identifier);
 
       // Find user
       const user = await ctx.db.query.users.findFirst({
@@ -154,6 +169,10 @@ export const authRouter = router({
     .input(refreshTokenSchema)
     .mutation(async ({ ctx, input }) => {
       const { refreshToken } = input;
+
+      // Rate limiting
+      const identifier = ctx.user?.id || 'anonymous';
+      checkRateLimit('auth.refreshToken', identifier);
 
       // Find and validate refresh token
       const tokenRecord = await ctx.db.query.refreshTokens.findFirst({
@@ -217,6 +236,10 @@ export const authRouter = router({
     .input(passwordResetRequestSchema)
     .mutation(async ({ ctx, input }) => {
       const { email } = input;
+
+      // Rate limiting
+      const identifier = ctx.user?.id || email;
+      checkRateLimit('auth.passwordResetRequest', identifier);
 
       // Find user by email
       const user = await ctx.db.query.users.findFirst({
@@ -294,5 +317,126 @@ export const authRouter = router({
       await ctx.db.delete(refreshTokens).where(eq(refreshTokens.userId, resetToken.userId));
 
       return { success: true };
+    }),
+
+  // Email verification
+  verifyEmail: publicProcedure
+    .input(z.object({ token: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const { token } = input;
+
+      // Find user with this verification token
+      const user = await ctx.db.query.users.findFirst({
+        where: eq(users.emailVerificationToken, token),
+      });
+
+      if (!user) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Invalid or expired verification token',
+        });
+      }
+
+      // Check if token is expired
+      if (user.emailVerificationTokenExpiry && user.emailVerificationTokenExpiry < new Date()) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Verification token has expired',
+        });
+      }
+
+      // Update user as verified
+      await ctx.db
+        .update(users)
+        .set({
+          emailVerified: true,
+          emailVerificationToken: null,
+          emailVerificationTokenExpiry: null,
+        })
+        .where(eq(users.id, user.id));
+
+      return {
+        success: true,
+        message: 'Email verified successfully',
+      };
+    }),
+
+  // Resend verification email
+  resendVerification: publicProcedure
+    .input(z.object({ email: z.string().email() }))
+    .mutation(async ({ ctx, input }) => {
+      const { email } = input;
+
+      // Find user by email
+      const user = await ctx.db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+
+      if (!user) {
+        // Don't reveal if email exists or not for security
+        return {
+          success: true,
+          message: 'If the email exists, a verification email has been sent',
+        };
+      }
+
+      // Check if already verified
+      if (user.emailVerified) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Email is already verified',
+        });
+      }
+
+      // Generate new verification token
+      const verificationToken = randomBytes(32).toString('hex');
+      const tokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+      // Update user with new token
+      await ctx.db
+        .update(users)
+        .set({
+          emailVerificationToken: verificationToken,
+          emailVerificationTokenExpiry: tokenExpiry,
+        })
+        .where(eq(users.id, user.id));
+
+      // In production, send actual email here
+      // For now, just return success
+      return {
+        success: true,
+        message: 'Verification email sent',
+        // In development, you might want to return the token for testing
+        // token: verificationToken,
+      };
+    }),
+
+  // Generate CSRF token
+  generateCSRFToken: publicProcedure
+    .mutation(async ({ ctx }) => {
+      const sessionId = ctx.user?.id || 'anonymous';
+      const token = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+      try {
+        // Clean up old tokens for this session
+        await ctx.db
+          .delete(csrfTokens)
+          .where(eq(csrfTokens.sessionId, sessionId));
+
+        // Insert new token
+        await ctx.db.insert(csrfTokens).values({
+          sessionId,
+          token,
+          expiresAt,
+        });
+
+        return { token };
+      } catch (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to generate CSRF token',
+        });
+      }
     }),
 }); 

@@ -6,6 +6,9 @@ export const users = pgTable('users', {
   username: varchar('username', { length: 50 }).notNull().unique(),
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: text('password_hash').notNull(),
+  emailVerified: boolean('email_verified').notNull().default(false),
+  emailVerificationToken: text('email_verification_token'),
+  emailVerificationTokenExpiry: timestamp('email_verification_token_expiry'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -21,6 +24,23 @@ export const refreshTokens = pgTable('refresh_tokens', {
 export const passwordResetTokens = pgTable('password_reset_tokens', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const rateLimitLog = pgTable('rate_limit_log', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  identifier: varchar('identifier', { length: 255 }).notNull(), // IP address or user ID
+  endpoint: varchar('endpoint', { length: 255 }).notNull(),
+  requestCount: integer('request_count').notNull().default(1),
+  windowStart: timestamp('window_start').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const csrfTokens = pgTable('csrf_tokens', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  sessionId: varchar('session_id', { length: 255 }).notNull(),
   token: text('token').notNull().unique(),
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

@@ -23,7 +23,12 @@ export async function createContext({ req }: CreateHTTPContextOptions): Promise<
     const token = req.headers.authorization?.replace('Bearer ', '');
     
     if (token) {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as { userId: string };
+      const decoded = jwt.verify(token, env.JWT_SECRET) as any;
+      
+      // Validate token structure
+      if (!decoded || typeof decoded !== 'object' || !decoded.userId || typeof decoded.userId !== 'string') {
+        throw new Error('Invalid token structure');
+      }
       
       const dbUser = await db.query.users.findFirst({
         where: eq(users.id, decoded.userId),
@@ -39,6 +44,7 @@ export async function createContext({ req }: CreateHTTPContextOptions): Promise<
     }
   } catch (error) {
     // Invalid token, continue without user
+    // In production, consider logging authentication failures for security monitoring
   }
 
   return {
