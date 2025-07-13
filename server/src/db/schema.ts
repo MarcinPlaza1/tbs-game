@@ -10,6 +10,22 @@ export const users = pgTable('users', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+export const refreshTokens = pgTable('refresh_tokens', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const passwordResetTokens = pgTable('password_reset_tokens', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 export const games = pgTable('games', {
   id: uuid('id').defaultRandom().primaryKey(),
   status: varchar('status', { length: 20 }).notNull().default('waiting'),
@@ -49,6 +65,8 @@ export const maps = pgTable('maps', {
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   gamePlayers: many(gamePlayers),
+  refreshTokens: many(refreshTokens),
+  passwordResetTokens: many(passwordResetTokens),
 }));
 
 export const gamesRelations = relations(games, ({ many, one }) => ({
@@ -70,6 +88,20 @@ export const gamePlayersRelations = relations(gamePlayers, ({ one }) => ({
   }),
   user: one(users, {
     fields: [gamePlayers.userId],
+    references: [users.id],
+  }),
+}));
+
+export const refreshTokensRelations = relations(refreshTokens, ({ one }) => ({
+  user: one(users, {
+    fields: [refreshTokens.userId],
+    references: [users.id],
+  }),
+}));
+
+export const passwordResetTokensRelations = relations(passwordResetTokens, ({ one }) => ({
+  user: one(users, {
+    fields: [passwordResetTokens.userId],
     references: [users.id],
   }),
 })); 

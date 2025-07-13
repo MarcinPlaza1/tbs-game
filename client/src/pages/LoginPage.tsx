@@ -14,7 +14,7 @@ function LoginPage() {
 
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: (data) => {
-      login(data.user, data.token);
+      login(data.user, data.token, data.refreshToken);
       navigate('/lobby');
     },
     onError: (err) => {
@@ -82,6 +82,11 @@ function LoginPage() {
             Don't have an account?{' '}
             <Link to="/register" className="text-game-accent hover:underline">
               Register here
+            </Link>
+          </p>
+          <p className="mt-2 text-center text-gray-400">
+            <Link to="/reset-password" className="text-game-accent hover:underline">
+              Forgot your password?
             </Link>
           </p>
         </div>

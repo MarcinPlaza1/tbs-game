@@ -3,9 +3,10 @@ import bcrypt from 'bcrypt';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { TRPCError } from '@trpc/server';
 import { router, publicProcedure } from '../trpc';
-import { users } from '../../db/schema';
-import { eq } from 'drizzle-orm';
+import { users, refreshTokens, passwordResetTokens } from '../../db/schema';
+import { eq, lt } from 'drizzle-orm';
 import { env } from '../../config/env';
+import { randomBytes } from 'crypto';
 
 const registerSchema = z.object({
   username: z.string().min(3).max(50),
@@ -17,6 +18,37 @@ const loginSchema = z.object({
   username: z.string(),
   password: z.string(),
 });
+
+const refreshTokenSchema = z.object({
+  refreshToken: z.string(),
+});
+
+const passwordResetRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+const passwordResetSchema = z.object({
+  token: z.string(),
+  newPassword: z.string().min(6),
+});
+
+// Utility functions
+const generateRefreshToken = (): string => {
+  return randomBytes(32).toString('hex');
+};
+
+const generateTokenPair = (userId: string) => {
+  const accessToken = jwt.sign(
+    { userId },
+    env.JWT_SECRET,
+    { expiresIn: '15m' } // Short-lived access token
+  );
+  
+  const refreshToken = generateRefreshToken();
+  const refreshTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  
+  return { accessToken, refreshToken, refreshTokenExpiresAt };
+};
 
 export const authRouter = router({
   register: publicProcedure
@@ -49,12 +81,15 @@ export const authRouter = router({
         })
         .returning();
 
-      // Generate token
-      const token = jwt.sign(
-        { userId: newUser.id },
-        env.JWT_SECRET,
-        { expiresIn: '7d' }
-      );
+      // Generate token pair
+      const { accessToken, refreshToken, refreshTokenExpiresAt } = generateTokenPair(newUser.id);
+
+      // Store refresh token in database
+      await ctx.db.insert(refreshTokens).values({
+        userId: newUser.id,
+        token: refreshToken,
+        expiresAt: refreshTokenExpiresAt,
+      });
 
       return {
         user: {
@@ -62,7 +97,8 @@ export const authRouter = router({
           username: newUser.username,
           email: newUser.email,
         },
-        token,
+        token: accessToken,
+        refreshToken,
       };
     }),
 
@@ -93,12 +129,15 @@ export const authRouter = router({
         });
       }
 
-      // Generate token
-      const token = jwt.sign(
-        { userId: user.id },
-        env.JWT_SECRET,
-        { expiresIn: '7d' }
-      );
+      // Generate token pair
+      const { accessToken, refreshToken, refreshTokenExpiresAt } = generateTokenPair(user.id);
+
+      // Store refresh token in database
+      await ctx.db.insert(refreshTokens).values({
+        userId: user.id,
+        token: refreshToken,
+        expiresAt: refreshTokenExpiresAt,
+      });
 
       return {
         user: {
@@ -106,7 +145,154 @@ export const authRouter = router({
           username: user.username,
           email: user.email,
         },
-        token,
+        token: accessToken,
+        refreshToken,
       };
+    }),
+
+  refresh: publicProcedure
+    .input(refreshTokenSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { refreshToken } = input;
+
+      // Find and validate refresh token
+      const tokenRecord = await ctx.db.query.refreshTokens.findFirst({
+        where: eq(refreshTokens.token, refreshToken),
+        with: {
+          user: true,
+        },
+      });
+
+      if (!tokenRecord) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Invalid refresh token',
+        });
+      }
+
+      // Check if token is expired
+      if (tokenRecord.expiresAt < new Date()) {
+        // Delete expired token
+        await ctx.db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Refresh token expired',
+        });
+      }
+
+      // Generate new token pair
+      const { accessToken, refreshToken: newRefreshToken, refreshTokenExpiresAt } = generateTokenPair(tokenRecord.userId);
+
+      // Replace old refresh token with new one
+      await ctx.db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
+      await ctx.db.insert(refreshTokens).values({
+        userId: tokenRecord.userId,
+        token: newRefreshToken,
+        expiresAt: refreshTokenExpiresAt,
+      });
+
+      return {
+        user: {
+          id: tokenRecord.user.id,
+          username: tokenRecord.user.username,
+          email: tokenRecord.user.email,
+        },
+        token: accessToken,
+        refreshToken: newRefreshToken,
+      };
+    }),
+
+  logout: publicProcedure
+    .input(refreshTokenSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { refreshToken } = input;
+
+      // Delete refresh token from database
+      await ctx.db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
+
+      return { success: true };
+    }),
+
+  requestPasswordReset: publicProcedure
+    .input(passwordResetRequestSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { email } = input;
+
+      // Find user by email
+      const user = await ctx.db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+
+      if (!user) {
+        // Don't reveal if email exists or not for security
+        return { success: true };
+      }
+
+      // Generate reset token
+      const resetToken = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+      // Delete any existing reset tokens for this user
+      await ctx.db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, user.id));
+
+      // Create new reset token
+      await ctx.db.insert(passwordResetTokens).values({
+        userId: user.id,
+        token: resetToken,
+        expiresAt,
+      });
+
+      // TODO: Send email with reset link
+      // For now, just log the token (in production, send email)
+      console.log(`Password reset token for ${email}: ${resetToken}`);
+
+      return { success: true };
+    }),
+
+  resetPassword: publicProcedure
+    .input(passwordResetSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { token, newPassword } = input;
+
+      // Find valid reset token
+      const resetToken = await ctx.db.query.passwordResetTokens.findFirst({
+        where: eq(passwordResetTokens.token, token),
+        with: {
+          user: true,
+        },
+      });
+
+      if (!resetToken) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Invalid or expired reset token',
+        });
+      }
+
+      // Check if token is expired
+      if (resetToken.expiresAt < new Date()) {
+        // Delete expired token
+        await ctx.db.delete(passwordResetTokens).where(eq(passwordResetTokens.token, token));
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Reset token expired',
+        });
+      }
+
+      // Hash new password
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update user password
+      await ctx.db.update(users)
+        .set({ passwordHash })
+        .where(eq(users.id, resetToken.userId));
+
+      // Delete used reset token
+      await ctx.db.delete(passwordResetTokens).where(eq(passwordResetTokens.token, token));
+
+      // Delete all refresh tokens for this user (force re-login)
+      await ctx.db.delete(refreshTokens).where(eq(refreshTokens.userId, resetToken.userId));
+
+      return { success: true };
     }),
 }); 

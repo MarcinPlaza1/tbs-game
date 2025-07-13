@@ -1,13 +1,32 @@
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
+import { trpc } from '../providers/TrpcProvider';
 
 function Layout() {
-  const { isAuthenticated, user, logout } = useAuthStore();
+  const { isAuthenticated, user, logout, refreshToken } = useAuthStore();
   const navigate = useNavigate();
 
+  const logoutMutation = trpc.auth.logout.useMutation({
+    onSuccess: () => {
+      logout();
+      navigate('/');
+    },
+    onError: (error) => {
+      // Even if API call fails, logout locally for security
+      console.error('Logout API error:', error);
+      logout();
+      navigate('/');
+    },
+  });
+
   const handleLogout = () => {
-    logout();
-    navigate('/');
+    if (refreshToken) {
+      logoutMutation.mutate({ refreshToken });
+    } else {
+      // No refresh token, just logout locally
+      logout();
+      navigate('/');
+    }
   };
 
   return (
@@ -24,9 +43,14 @@ function Layout() {
                   Home
                 </Link>
                 {isAuthenticated && (
-                  <Link to="/lobby" className="text-gray-300 hover:text-white px-3 py-2 rounded-md">
-                    Lobby
-                  </Link>
+                  <>
+                    <Link to="/lobby" className="text-gray-300 hover:text-white px-3 py-2 rounded-md">
+                      Lobby
+                    </Link>
+                    <Link to="/settings" className="text-gray-300 hover:text-white px-3 py-2 rounded-md">
+                      Settings
+                    </Link>
+                  </>
                 )}
               </div>
             </div>

@@ -16,7 +16,7 @@ function RegisterPage() {
 
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: (data) => {
-      login(data.user, (data as any).token);
+      login(data.user, data.token, data.refreshToken);
       navigate('/lobby');
     },
     onError: (err) => {
