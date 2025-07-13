@@ -12,7 +12,7 @@
     "db:seed": "bun run src/db/seed.ts"
   },
   "dependencies": {
-    "@tbs/shared": "workspace:*",
+    "@tbs/shared": "file:../shared",
     "@trpc/server": "^10.45.0",
     "@trpc/client": "^10.45.0",
     "drizzle-orm": "^0.29.0",

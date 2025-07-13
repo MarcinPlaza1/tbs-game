@@ -1,26 +1,52 @@
-// @ts-nocheck
-import React from 'react';
+// ---- Types --------------------------------------------------------------
+interface MapInfo {
+  name: string;
+}
 
-interface GameCardProps {
-  game: any;
+interface UserInfo {
+  username: string;
+}
+
+interface PlayerInfo {
+  id: string;
+  userId: string;
+  user: UserInfo;
+  color: string;
+}
+
+interface GameSettingsInfo {
+  maxPlayers: number;
+}
+
+export interface GameListItem {
+  id: string;
+  map?: MapInfo;
+  players: PlayerInfo[];
+  settings: GameSettingsInfo;
+}
+
+export interface GameCardProps {
+  game: GameListItem;
   userId?: string;
   onJoin: (gameId: string) => void;
   joinLoading: boolean;
 }
 
+// ------------------------------------------------------------------------
+
 function GameCard({ game, userId, onJoin, joinLoading }: GameCardProps) {
-  const isUserInGame = game.players.some((p: any) => p.userId === userId);
-  const settings = game.settings as any;
-  const isFull = game.players.length >= (settings?.maxPlayers || 0);
+  const isUserInGame = game.players.some((p) => p.userId === userId);
+  const { maxPlayers } = game.settings;
+  const isFull = game.players.length >= maxPlayers;
 
   return (
     <div className="card" aria-label={`Game ${game.map?.name || 'Unknown Map'}`}>
       <h3 className="text-xl font-bold mb-2">{game.map?.name || 'Unknown Map'}</h3>
       <p className="text-gray-400 mb-4">
-        Players: {game.players.length}/{settings.maxPlayers}
+        Players: {game.players.length}/{maxPlayers}
       </p>
       <div className="flex flex-wrap gap-2 mb-4">
-        {game.players.map((player: any) => (
+        {game.players.map((player) => (
           <span
             key={player.id}
             className={`px-2 py-1 rounded text-sm ${
