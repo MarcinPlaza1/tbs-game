@@ -1,0 +1,17 @@
+# Database
+DATABASE_URL=postgresql://postgres:User123@localhost:5432/tbs_game
+
+# Server
+PORT=3000
+NODE_ENV=development
+
+# JWT
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+JWT_EXPIRES_IN=7d
+
+# Colyseus
+COLYSEUS_URL=ws://localhost:2567
+GAME_SERVER_PORT=2567
+
+# Client URL (for CORS)
+CLIENT_URL=http://localhost:5173 

@@ -1,0 +1,24 @@
+{
+  "name": "@tbs/game-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun run dist/index.js"
+  },
+  "dependencies": {
+    "@tbs/shared": "workspace:*",
+    "colyseus": "^0.15.0",
+    "@colyseus/monitor": "^0.15.0",
+    "express": "^4.18.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/express": "^4.17.0",
+    "@types/cors": "^2.8.17",
+    "typescript": "^5.3.0",
+    "bun-types": "^1.0.0"
+  }
+} 

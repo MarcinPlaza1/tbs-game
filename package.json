@@ -1,0 +1,26 @@
+{
+  "name": "tbs-game",
+  "version": "1.0.0",
+  "description": "Turn Based Strategy Game",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client", 
+    "game-server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:game-server\"",
+    "dev:server": "cd server && bun run dev",
+    "dev:client": "cd client && bun run dev",
+    "dev:game-server": "cd game-server && bun run dev",
+    "build": "npm run build:shared && npm run build:server && npm run build:client && npm run build:game-server",
+    "build:shared": "cd shared && bun run build",
+    "build:server": "cd server && bun run build",
+    "build:client": "cd client && bun run build",
+    "build:game-server": "cd game-server && bun run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+} 
