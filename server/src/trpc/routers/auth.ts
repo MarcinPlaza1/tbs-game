@@ -56,15 +56,27 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { username, email, password } = input;
 
-      // Check if user already exists
-      const existingUser = await ctx.db.query.users.findFirst({
+      // Check if user already exists by username
+      const existingUserByUsername = await ctx.db.query.users.findFirst({
         where: eq(users.username, username),
       });
 
-      if (existingUser) {
+      if (existingUserByUsername) {
         throw new TRPCError({
           code: 'CONFLICT',
           message: 'Username already taken',
+        });
+      }
+
+      // Check if user already exists by email
+      const existingUserByEmail = await ctx.db.query.users.findFirst({
+        where: eq(users.email, email),
+      });
+
+      if (existingUserByEmail) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Email already taken',
         });
       }
 
@@ -243,8 +255,8 @@ export const authRouter = router({
       });
 
       // TODO: Send email with reset link
-      // For now, just log the token (in production, send email)
-      console.log(`Password reset token for ${email}: ${resetToken}`);
+      // In production, implement proper email sending instead of logging
+      // console.log(`Password reset token for ${email}: ${resetToken}`);
 
       return { success: true };
     }),
