@@ -39,12 +39,23 @@ function GameCard({ game, userId, onJoin, joinLoading }: GameCardProps) {
   const { maxPlayers } = game.settings;
   const isFull = game.players.length >= maxPlayers;
 
+  const statusText = isFull ? 'Full' : 'Open';
+  const statusColor = isFull ? 'bg-red-600' : 'bg-green-600';
+
   return (
-    <div className="card" aria-label={`Game ${game.map?.name || 'Unknown Map'}`}>
+    <div className="card" role="listitem" aria-label={`Game card for ${game.map?.name || 'Unknown Map'}`}>
       <h3 className="text-xl font-bold mb-2">{game.map?.name || 'Unknown Map'}</h3>
-      <p className="text-gray-400 mb-4">
-        Players: {game.players.length}/{maxPlayers}
-      </p>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-gray-400">
+          Players: {game.players.length}/{maxPlayers}
+        </p>
+        <span
+          className={`text-xs px-2 py-1 rounded-full uppercase tracking-wide ${statusColor}`}
+          aria-label={`Game status: ${statusText}`}
+        >
+          {statusText}
+        </span>
+      </div>
       <div className="flex flex-wrap gap-2 mb-4">
         {game.players.map((player) => (
           <span

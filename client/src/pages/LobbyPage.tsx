@@ -154,13 +154,13 @@ function LobbyPage() {
       </div>
       {/* Loading state */}
       {gamesLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Loading games list">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" aria-label="Loading games list" role="list">
           {Array.from({ length: 6 }).map((_, idx) => (
             <GameCardSkeleton key={idx} />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" role="list">
           {games?.map((game) => (
             <GameCard
               key={game.id}
