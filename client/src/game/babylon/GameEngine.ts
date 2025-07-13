@@ -12,7 +12,7 @@ import { MapManager } from '../managers/MapManager';
 import { UnitManager } from '../managers/UnitManager';
 import { InputManager } from '../managers/InputManager';
 import { UIManager } from '../managers/UIManager';
-import type { GameState } from '../../../../game-server/src/schemas/GameState';
+import type { GameState } from '../../types/gameServer';
 import type { Room } from 'colyseus.js';
 import { ClientMessageType, UnitAction } from '@tbs/shared';
 

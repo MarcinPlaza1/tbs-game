@@ -20,11 +20,15 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     
+    "types": ["@types/react", "@types/react-dom"],
     "paths": {
       "@/*": ["./src/*"],
-      "@tbs/shared": ["../shared/src"]
+      "@tbs/shared": ["../shared/src"],
+      "../../../../game-server/src/schemas/GameState": ["./src/types/gameServer.d.ts"],
+      "../../../game-server/src/schemas/GameState": ["./src/types/gameServer.d.ts"]
     }
   },
   "include": ["src"],
+  "exclude": ["../game-server", "../server"],
   "references": [{ "path": "./tsconfig.node.json" }]
 } 

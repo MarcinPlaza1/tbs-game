@@ -907,7 +907,8 @@ function GamePage() {
                 );
               })}
               
-              {!gameState && gameData?.players.map((player) => (
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              {!gameState && gameData?.players.map((player: any) => (
                 <div
                   key={player.id}
                   className="flex items-center justify-between p-2 bg-gray-700 rounded opacity-50"
