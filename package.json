@@ -18,7 +18,8 @@
     "build:shared": "cd shared && bun run build",
     "build:server": "cd server && bun run build",
     "build:client": "cd client && bun run build",
-    "build:game-server": "cd game-server && bun run build"
+    "build:game-server": "cd game-server && bun run build",
+    "install:all": "bun install && cd server && bun install && cd ../client && bun install && cd ../game-server && bun install && cd ../shared && bun install"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

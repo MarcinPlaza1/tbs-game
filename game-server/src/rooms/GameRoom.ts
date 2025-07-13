@@ -26,6 +26,7 @@ interface CreateOptions {
 
 export class GameRoom extends Room<GameState> {
   maxClients = 8;
+  private playerOrder: string[] = []; // Maintain consistent player order
   
   onCreate(options: CreateOptions) {
     console.log('🏠 Creating GameRoom with options:', options);
@@ -67,6 +68,16 @@ export class GameRoom extends Room<GameState> {
   onJoin(client: Client, options: JoinOptions) {
     console.log('👤 Player joining:', client.sessionId, options.username, 'Game ID:', options.gameId);
     
+    // Prevent joining if game is in progress
+    if (this.state.status === GameStatus.IN_PROGRESS) {
+      client.send(ServerMessageType.ERROR, {
+        message: 'Game already in progress',
+        code: 'GAME_IN_PROGRESS',
+      });
+      client.leave();
+      return;
+    }
+    
     // Create new player
     const player = new Player();
     player.id = options.userId;
@@ -74,6 +85,9 @@ export class GameRoom extends Room<GameState> {
     player.color = this.getPlayerColor(this.state.players.size);
     
     this.state.players.set(client.sessionId, player);
+    
+    // Add to player order for consistent turn management
+    this.playerOrder.push(client.sessionId);
     
     console.log(`✅ Player ${options.username} joined room. Total players: ${this.state.players.size}`);
     console.log('🎲 Current game state:', {
@@ -138,6 +152,38 @@ export class GameRoom extends Room<GameState> {
       // Remove player if room is still in waiting state
       if (this.state.status === GameStatus.WAITING) {
         this.state.players.delete(client.sessionId);
+        
+        // Remove from player order
+        const index = this.playerOrder.indexOf(client.sessionId);
+        if (index > -1) {
+          this.playerOrder.splice(index, 1);
+        }
+      } else {
+        // If game is in progress, handle player leaving during game
+        const playerIndex = this.playerOrder.indexOf(client.sessionId);
+        if (playerIndex > -1) {
+          // Adjust current player index if needed
+          if (playerIndex < this.state.currentPlayerIndex) {
+            this.state.currentPlayerIndex--;
+          } else if (playerIndex === this.state.currentPlayerIndex) {
+            // Current player left, skip to next
+            this.advanceToNextPlayer();
+          }
+          
+          // Remove from order
+          this.playerOrder.splice(playerIndex, 1);
+          
+          // Remove player's units
+          const unitsToRemove: string[] = [];
+          this.state.units.forEach((unit, unitId) => {
+            if (unit.playerId === player.id) {
+              unitsToRemove.push(unitId);
+            }
+          });
+          unitsToRemove.forEach(unitId => {
+            this.state.units.delete(unitId);
+          });
+        }
       }
     }
   }
@@ -181,7 +227,7 @@ export class GameRoom extends Room<GameState> {
   
   private handleUnitAction(client: Client, action: UnitAction) {
     const player = this.state.players.get(client.sessionId);
-    if (!player || !this.isPlayerTurn(player)) {
+    if (!player || !this.isPlayerTurn(client.sessionId)) {
       client.send(ServerMessageType.ERROR, {
         message: 'Not your turn',
         code: 'NOT_YOUR_TURN',
@@ -210,10 +256,12 @@ export class GameRoom extends Room<GameState> {
         break;
     }
     
-    // Broadcast action result
+    // Broadcast action result with updated game state
     this.broadcast(ServerMessageType.UNIT_ACTION_RESULT, {
-      action,
+      type: action.type,
+      unitId: action.unitId,
       success: true,
+      gameState: this.getGameStateForClient()
     });
   }
   
@@ -251,11 +299,11 @@ export class GameRoom extends Room<GameState> {
   
   private handleEndTurn(client: Client) {
     const player = this.state.players.get(client.sessionId);
-    if (!player || !this.isPlayerTurn(player)) return;
+    if (!player || !this.isPlayerTurn(client.sessionId)) return;
     
     console.log('🔄 Ending turn for player:', player.username);
     
-    // Reset unit states
+    // Reset unit states for current player
     this.state.units.forEach(unit => {
       if (unit.playerId === player.id) {
         unit.hasMoved = false;
@@ -263,22 +311,30 @@ export class GameRoom extends Room<GameState> {
       }
     });
     
-    // Move to next player
-    this.state.currentPlayerIndex = (this.state.currentPlayerIndex + 1) % this.state.players.size;
+    // Advance to next player
+    this.advanceToNextPlayer();
+  }
+
+  private advanceToNextPlayer() {
+    this.state.currentPlayerIndex = (this.state.currentPlayerIndex + 1) % this.playerOrder.length;
     this.state.turnNumber++;
     
-    // Reset action points for next player
-    const players = Array.from(this.state.players.values());
-    const nextPlayer = players[this.state.currentPlayerIndex];
-    if (nextPlayer) {
-      nextPlayer.actionPoints = 3;
-    }
+    const currentSessionId = this.playerOrder[this.state.currentPlayerIndex];
+    const currentPlayer = this.state.players.get(currentSessionId);
     
-    this.broadcast(ServerMessageType.TURN_CHANGED, {
-      currentPlayerIndex: this.state.currentPlayerIndex,
-      turnNumber: this.state.turnNumber,
-      currentPlayer: nextPlayer?.username,
-    });
+    if (currentPlayer) {
+      currentPlayer.actionPoints = 3;
+      
+      console.log('🔄 Turn advanced to:', currentPlayer.username, 'Turn:', this.state.turnNumber);
+      
+      this.broadcast(ServerMessageType.TURN_CHANGED, {
+        currentPlayerIndex: this.state.currentPlayerIndex,
+        turnNumber: this.state.turnNumber,
+        currentPlayer: currentPlayer.id,
+        currentPlayerName: currentPlayer.username,
+        gameState: this.getGameStateForClient()
+      });
+    }
   }
   
   private handleChatMessage(client: Client, message: string) {
@@ -303,48 +359,64 @@ export class GameRoom extends Room<GameState> {
     this.state.currentPlayerIndex = 0;
     this.state.turnNumber = 1;
     
-    // Spawn initial units for each player
-    let playerIndex = 0;
-    this.state.players.forEach((player, sessionId) => {
-      this.spawnUnitsForPlayer(player, playerIndex);
-      console.log('⚔️ Spawned units for player:', player.username);
-      playerIndex++;
+    // Spawn initial units for each player in order
+    this.playerOrder.forEach((sessionId, playerIndex) => {
+      const player = this.state.players.get(sessionId);
+      if (player) {
+        this.spawnUnitsForPlayer(player, playerIndex);
+        console.log('⚔️ Spawned units for player:', player.username, 'at index:', playerIndex);
+      }
     });
     
     // Set first player's action points
-    const firstPlayer = Array.from(this.state.players.values())[0];
+    const firstSessionId = this.playerOrder[0];
+    const firstPlayer = this.state.players.get(firstSessionId);
     if (firstPlayer) {
       firstPlayer.actionPoints = 3;
     }
     
     this.broadcast(ServerMessageType.GAME_STARTED, {
       gameId: this.state.gameId,
-      currentPlayer: firstPlayer?.username,
+      currentPlayer: firstPlayer?.id,
+      currentPlayerName: firstPlayer?.username,
     });
     
-    // Send updated game state after start
-    console.log('📤 Sending game state after start');
-    this.broadcast('manual_state_update', {
-      gameId: this.state.gameId,
-      status: this.state.status,
-      phase: this.state.phase,
-      playersCount: this.state.players.size,
-      turnNumber: this.state.turnNumber,
-      players: Array.from(this.state.players.values()).map(p => ({
-        id: p.id,
-        username: p.username,
-        color: p.color,
-        isReady: p.isReady
-      }))
-    });
+    // Send complete game state after start
+    console.log('📤 Sending complete game state after start');
+    this.broadcast('manual_state_update', this.getGameStateForClient());
     
-    console.log('✅ Game started successfully!');
+    console.log('✅ Game started successfully! Turn order:', this.playerOrder.map(sessionId => {
+      const player = this.state.players.get(sessionId);
+      return player?.username;
+    }));
   }
   
   private spawnUnitsForPlayer(player: Player, playerIndex: number) {
-    // Spawn 3 units per player at start
-    const spawnX = playerIndex < 2 ? 2 : this.state.mapWidth - 3;
-    const spawnY = playerIndex % 2 === 0 ? 2 : this.state.mapHeight - 3;
+    // Spawn 3 units per player at corners/sides of map
+    let spawnX: number, spawnY: number;
+    
+    switch (playerIndex) {
+      case 0: // Top-left
+        spawnX = 1;
+        spawnY = 1;
+        break;
+      case 1: // Top-right
+        spawnX = this.state.mapWidth - 4;
+        spawnY = 1;
+        break;
+      case 2: // Bottom-left
+        spawnX = 1;
+        spawnY = this.state.mapHeight - 4;
+        break;
+      case 3: // Bottom-right
+        spawnX = this.state.mapWidth - 4;
+        spawnY = this.state.mapHeight - 4;
+        break;
+      default: // Additional players in middle edges
+        spawnX = playerIndex % 2 === 0 ? 1 : this.state.mapWidth - 4;
+        spawnY = Math.floor(this.state.mapHeight / 2) - 1;
+        break;
+    }
     
     const unitTypes = [UnitType.WARRIOR, UnitType.ARCHER, UnitType.MAGE];
     
@@ -390,9 +462,67 @@ export class GameRoom extends Room<GameState> {
     }
   }
   
-  private isPlayerTurn(player: Player): boolean {
-    const players = Array.from(this.state.players.values());
-    return players[this.state.currentPlayerIndex]?.id === player.id;
+  private isPlayerTurn(sessionId: string): boolean {
+    if (this.state.status !== GameStatus.IN_PROGRESS) return false;
+    
+    const currentSessionId = this.playerOrder[this.state.currentPlayerIndex];
+    return currentSessionId === sessionId;
+  }
+
+  private getGameStateForClient() {
+    return {
+      gameId: this.state.gameId,
+      status: this.state.status,
+      phase: this.state.phase,
+      turnNumber: this.state.turnNumber,
+      currentPlayerIndex: this.state.currentPlayerIndex,
+      mapWidth: this.state.mapWidth,
+      mapHeight: this.state.mapHeight,
+      players: this.getPlayersData(),
+      units: this.getUnitsData(),
+    };
+  }
+
+  private getPlayersData() {
+    const playersData: any = {};
+    this.state.players.forEach((player, sessionId) => {
+      playersData[player.id] = {
+        id: player.id,
+        username: player.username,
+        color: player.color,
+        isReady: player.isReady,
+        isActive: player.isActive,
+        actionPoints: player.actionPoints,
+        isCurrentPlayer: this.isPlayerTurn(sessionId)
+      };
+    });
+    return playersData;
+  }
+
+  private getUnitsData() {
+    const unitsData = new Map();
+    this.state.units.forEach((unit, unitId) => {
+      unitsData.set(unitId, {
+        id: unit.id,
+        playerId: unit.playerId,
+        type: unit.type,
+        position: {
+          x: unit.position.x,
+          y: unit.position.y,
+          z: unit.position.z
+        },
+        health: unit.health,
+        maxHealth: unit.maxHealth,
+        attack: unit.attack,
+        defense: unit.defense,
+        movement: unit.movement,
+        range: unit.range,
+        hasMoved: unit.hasMoved,
+        hasAttacked: unit.hasAttacked,
+        isAlive: unit.isAlive
+      });
+    });
+    return unitsData;
   }
   
   private getPlayerColor(index: number): string {

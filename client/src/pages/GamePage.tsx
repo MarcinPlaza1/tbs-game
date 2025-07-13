@@ -4,6 +4,7 @@ import { Client, Room } from 'colyseus.js';
 import { GameEngine } from '../game/babylon/GameEngine';
 import { useAuthStore } from '../stores/authStore';
 import { trpc } from '../providers/TrpcProvider';
+import { ServerMessageType, ClientMessageType } from '@tbs/shared';
 
 function GamePage() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -15,8 +16,52 @@ function GamePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [gameState, setGameState] = useState<any>(null);
-  const [chatMessages, setChatMessages] = useState<Array<{ username: string; message: string; timestamp: number }>>([]);
   const [chatInput, setChatInput] = useState('');
+  
+  // Unified log system for chat and events
+  interface GameLogEntry {
+    id: string;
+    type: 'chat' | 'system' | 'player_event' | 'game_event' | 'action' | 'debug';
+    timestamp: number;
+    message: string;
+    username?: string;
+    metadata?: any;
+  }
+  
+  const [gameLog, setGameLog] = useState<GameLogEntry[]>([]);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const gameLogRef = useRef<HTMLDivElement>(null);
+  
+  // Enhanced logging function
+  const addGameLog = (
+    type: GameLogEntry['type'], 
+    message: string, 
+    username?: string, 
+    metadata?: any
+  ) => {
+    const logEntry: GameLogEntry = {
+      id: Date.now().toString() + Math.random().toString(36),
+      type,
+      timestamp: Date.now(),
+      message,
+      username,
+      metadata
+    };
+    
+    setGameLog(prev => [...prev.slice(-99), logEntry]); // Keep last 100 entries
+    
+    // Auto-scroll to bottom
+    setTimeout(() => {
+      if (gameLogRef.current) {
+        gameLogRef.current.scrollTop = gameLogRef.current.scrollHeight;
+      }
+    }, 100);
+    
+    // Also add to connection log for debugging
+    if (type === 'debug' || type === 'system') {
+      addLog(message);
+    }
+  };
   const [connectionLog, setConnectionLog] = useState<string[]>([]);
   
   // Loading states
@@ -60,6 +105,13 @@ function GamePage() {
 
   useEffect(() => {
     if (!user || !gameId || roomRef.current || initializingRef.current) return; // Prevent multiple initializations
+    
+    // Add initial welcome message to game log
+    addGameLog('system', `Welcome to the game! Connecting to room ${gameId}...`, 'System', {
+      gameId,
+      userId: user.id,
+      event: 'connection_start'
+    });
     
     initializingRef.current = true;
     
@@ -105,6 +157,19 @@ function GamePage() {
         
         roomRef.current = room;
         addLog(`✅ Connected to game room: ${room.id}`);
+        
+        // Add to game log
+        addGameLog('system', `Connected to game room successfully!`, 'System', {
+          roomId: room.id,
+          event: 'connection_success'
+        });
+
+        // Connect room to game engine if ready
+        if (engineRef.current && user) {
+          engineRef.current.setRoom(room);
+          engineRef.current.setCurrentPlayerId(user.id);
+          addLog('🔗 Connected room to game engine');
+        }
 
         // Set up room event handlers
         room.onStateChange((state: any) => {
@@ -124,14 +189,53 @@ function GamePage() {
 
         room.onMessage('player_joined', (message) => {
           addLog(`👤 Player joined: ${message.username}`);
+          addGameLog('player_event', `${message.username} joined the game`, 'System', {
+            playerId: message.playerId,
+            event: 'join'
+          });
         });
 
         room.onMessage('player_left', (message) => {
           addLog(`👋 Player left: ${message.username}`);
+          addGameLog('player_event', `${message.username} left the game`, 'System', {
+            playerId: message.playerId,
+            event: 'leave'
+          });
         });
 
         room.onMessage('game_started', (message) => {
           addLog(`🎉 Game started! Current player: ${message.currentPlayer}`);
+          addGameLog('game_event', `Game started! Current player: ${message.currentPlayer}`, 'System', {
+            currentPlayer: message.currentPlayer,
+            event: 'game_start'
+          });
+        });
+
+        room.onMessage(ServerMessageType.TURN_CHANGED, (message) => {
+          addLog(`🔄 Turn changed to player ${message.currentPlayer} (Turn ${message.turnNumber})`);
+          
+          // Add to unified log
+          const isMyTurn = message.currentPlayer === user.id;
+          addGameLog('game_event', 
+            isMyTurn ? `It's your turn! (Turn ${message.turnNumber})` : `Player ${message.currentPlayer}'s turn (Turn ${message.turnNumber})`,
+            'System',
+            {
+              turnNumber: message.turnNumber,
+              currentPlayer: message.currentPlayer,
+              isMyTurn,
+              event: 'turn_change'
+            }
+          );
+          
+          // Complete turn reset and state update
+          handleTurnChange(message, isMyTurn);
+          
+          // Show turn notification
+          if (isMyTurn) {
+            addLog(`🎯 It's your turn!`);
+          } else {
+            addLog(`⏳ Waiting for player ${message.currentPlayer}...`);
+          }
         });
 
         room.onMessage('manual_state_update', (message) => {
@@ -172,16 +276,66 @@ function GamePage() {
 
         room.onMessage('chat_message', (message) => {
           addLog(`💬 Chat: ${message.username}: ${message.message}`);
-          setChatMessages((prev) => {
-            // Prevent duplicate messages
-            const isDuplicate = prev.some(msg => 
-              msg.username === message.username && 
-              msg.message === message.message && 
-              Math.abs(msg.timestamp - message.timestamp) < 1000
-            );
-            if (isDuplicate) return prev;
-            return [...prev, message];
+          
+          // Add to unified log
+          addGameLog('chat', message.message, message.username, {
+            timestamp: message.timestamp
           });
+        });
+
+        room.onMessage(ServerMessageType.UNIT_ACTION_RESULT, (message) => {
+          addLog(`🎯 Unit action result: ${message.type} - ${message.success ? 'Success' : 'Failed'}`);
+          
+          if (message.success) {
+            // Show success message
+            if (engineRef.current && message.type) {
+              addLog(`✅ ${message.type.charAt(0).toUpperCase() + message.type.slice(1)} successful`);
+              
+              // Add to unified log
+              addGameLog('action', 
+                `${message.type.charAt(0).toUpperCase() + message.type.slice(1)} successful`,
+                user?.username,
+                {
+                  action: message.type,
+                  success: true,
+                  unitId: message.unitId,
+                  event: 'unit_action_success'
+                }
+              );
+            }
+          } else if (message.reason) {
+            // Show error message if action failed
+            if (engineRef.current) {
+              addLog(`❌ Action failed: ${message.reason}`);
+              
+              // Add to unified log
+              addGameLog('action', 
+                `Action failed: ${message.reason}`,
+                user?.username,
+                {
+                  action: message.type,
+                  success: false,
+                  reason: message.reason,
+                  unitId: message.unitId,
+                  event: 'unit_action_failed'
+                }
+              );
+            }
+          }
+          
+          // Update game state if provided
+          if (message.gameState) {
+            console.log('🔄 Updating game state from unit action result');
+            setGameState(message.gameState);
+            
+            if (engineRef.current) {
+              try {
+                engineRef.current.updateGameState(message.gameState);
+              } catch (error: any) {
+                addLog(`⚠️ GameEngine update failed: ${error.message}`);
+              }
+            }
+          }
         });
 
         room.onMessage('error', (message) => {
@@ -222,16 +376,195 @@ function GamePage() {
   }, [gameId, user?.id]); // Dependencies should remain stable
 
   const sendChatMessage = () => {
-    if (chatInput.trim() && roomRef.current) {
+    if (chatInput.trim() && roomRef.current && user) {
       roomRef.current.send('chat_message', chatInput);
+      
+      // Add to unified log immediately (optimistic update)
+      addGameLog('chat', chatInput, user.username, {
+        timestamp: Date.now(),
+        sent: true
+      });
+      
       setChatInput('');
     }
   };
 
+  // Handle complete turn change with state reset
+  const handleTurnChange = (message: any, isMyTurn: boolean) => {
+    console.log('🔄 Processing turn change...');
+    
+    // 1. Reset unit selection in GameEngine
+    if (engineRef.current) {
+      try {
+        // Clear any selected unit
+        if (engineRef.current.getSelectedUnitId()) {
+          engineRef.current.clearUnitSelection();
+          addLog('🔄 Cleared unit selection for new turn');
+        }
+      } catch (error: any) {
+        addLog(`⚠️ Error clearing selection: ${error.message}`);
+      }
+    }
+    
+    // 2. Update local game state
+    if (message.gameState) {
+      console.log('🔄 Updating game state from turn change');
+      setGameState(message.gameState);
+      
+      if (engineRef.current) {
+        try {
+          engineRef.current.updateGameState(message.gameState);
+          addLog('✅ Game state updated for new turn');
+        } catch (error: any) {
+          addLog(`⚠️ GameEngine update failed: ${error.message}`);
+        }
+      }
+    }
+    
+    // 3. Reset UI and action points for new turn
+    if (engineRef.current) {
+      try {
+        engineRef.current.refreshUnitsForNewTurn();
+        addLog('🔄 Units refreshed for new turn');
+      } catch (error: any) {
+        addLog(`⚠️ Error refreshing units: ${error.message}`);
+      }
+    }
+    
+    if (isMyTurn) {
+      addLog('🎯 Your turn started - all units refreshed');
+      addGameLog('system', 'Your turn - you can now move and act with your units', user?.username, {
+        event: 'turn_start_player'
+      });
+    } else {
+      addLog('⏳ Opponent\'s turn - waiting...');
+      addGameLog('system', `Waiting for player ${message.currentPlayer}`, 'System', {
+        event: 'turn_start_opponent',
+        currentPlayer: message.currentPlayer
+      });
+    }
+  };
+
   const handleEndTurn = () => {
-    if (roomRef.current) {
-      roomRef.current.send('end_turn');
-      addLog('🔄 End turn sent');
+    if (roomRef.current && user) {
+      // Disable further actions during turn transition
+      addLog('🔄 Ending turn...');
+      
+      // Send end turn message
+      roomRef.current.send(ClientMessageType.END_TURN, {
+        playerId: user.id
+      });
+      
+      // Add to game log
+      addGameLog('action', `Ended turn`, user.username, {
+        event: 'end_turn'
+      });
+      
+      // Clear current selection immediately for better UX
+      if (engineRef.current) {
+        try {
+          // Clear selection on turn end
+                     if (engineRef.current.getSelectedUnitId()) {
+             engineRef.current.clearUnitSelection();
+           }
+        } catch (error: any) {
+          console.warn('Error clearing selection on turn end:', error.message);
+        }
+      }
+    }
+  };
+
+  // Helper functions for log styling
+  const getLogEntryStyle = (type: GameLogEntry['type']): string => {
+    switch (type) {
+      case 'chat':
+        return 'bg-blue-900 bg-opacity-30 border-l-2 border-blue-500';
+      case 'player_event':
+        return 'bg-green-900 bg-opacity-30 border-l-2 border-green-500';
+      case 'game_event':
+        return 'bg-purple-900 bg-opacity-30 border-l-2 border-purple-500';
+      case 'action':
+        return 'bg-yellow-900 bg-opacity-30 border-l-2 border-yellow-500';
+      case 'system':
+        return 'bg-gray-900 bg-opacity-30 border-l-2 border-gray-500';
+      case 'debug':
+        return 'bg-red-900 bg-opacity-20 border-l-2 border-red-500';
+      default:
+        return 'bg-gray-800 bg-opacity-30';
+    }
+  };
+
+  const getMessageStyle = (type: GameLogEntry['type']): string => {
+    switch (type) {
+      case 'chat':
+        return 'text-white';
+      case 'player_event':
+        return 'text-green-300';
+      case 'game_event':
+        return 'text-purple-300';
+      case 'action':
+        return 'text-yellow-300';
+      case 'system':
+        return 'text-gray-300';
+      case 'debug':
+        return 'text-red-300';
+      default:
+        return 'text-gray-300';
+    }
+  };
+
+  const getEventIcon = (event: string): string => {
+    switch (event) {
+      case 'join':
+        return '👤';
+      case 'leave':
+        return '👋';
+      case 'game_start':
+        return '🎉';
+      case 'turn_change':
+        return '🔄';
+      case 'unit_action_success':
+        return '✅';
+      case 'unit_action_failed':
+        return '❌';
+      default:
+        return '📝';
+    }
+  };
+
+  const getCurrentPlayerName = (gameState: any): string => {
+    if (!gameState || !gameState.players) return 'Unknown';
+    
+    // Find current player by isCurrentPlayer flag
+    const currentPlayer = Object.values(gameState.players).find((player: any) => player.isCurrentPlayer);
+    if (currentPlayer) {
+      return (currentPlayer as any).username;
+    }
+    
+    // Fallback: use currentPlayerIndex
+    const playersArray = Object.values(gameState.players);
+    const currentIndex = gameState.currentPlayerIndex || 0;
+    if (playersArray[currentIndex]) {
+      return (playersArray[currentIndex] as any).username;
+    }
+    
+    return 'Unknown';
+  };
+
+  const getUnitTypeIcon = (unitType: string): string => {
+    switch (unitType?.toLowerCase()) {
+      case 'warrior':
+        return '⚔️';
+      case 'archer':
+        return '🏹';
+      case 'mage':
+        return '🔮';
+      case 'cavalry':
+        return '🐎';
+      case 'siege':
+        return '🏰';
+      default:
+        return '🛡️';
     }
   };
 
@@ -244,6 +577,14 @@ function GamePage() {
     try {
       if (engineRef.current && canvasRef.current) {
         addLog('⚡ Initializing 3D engine...');
+        
+        // Ensure room connection is established
+        if (roomRef.current && user) {
+          engineRef.current.setRoom(roomRef.current);
+          engineRef.current.setCurrentPlayerId(user.id);
+          addLog('🔗 Connected room to game engine');
+        }
+        
         await engineRef.current.initialize();
         addLog('✅ 3D engine activated successfully!');
         setGameActivated(true);
@@ -251,6 +592,14 @@ function GamePage() {
         // Try to create engine if it wasn't created before
         addLog('🔧 Creating and activating 3D engine...');
         engineRef.current = new GameEngine(canvasRef.current);
+        
+        // Connect to room immediately
+        if (roomRef.current && user) {
+          engineRef.current.setRoom(roomRef.current);
+          engineRef.current.setCurrentPlayerId(user.id);
+          addLog('🔗 Connected room to game engine');
+        }
+        
         await engineRef.current.initialize();
         addLog('✅ 3D engine created and activated!');
         setGameActivated(true);
@@ -263,6 +612,11 @@ function GamePage() {
     // Send ready signal to server
     roomRef.current.send('player_ready', {});
     addLog('✅ Player ready signal sent');
+    
+    // Add to game log
+    addGameLog('system', `You are ready to play!`, user?.username || 'Player', {
+      event: 'player_ready'
+    });
   };
 
   if (isLoading) {
@@ -332,10 +686,10 @@ function GamePage() {
             </button>
             <button 
               onClick={handleEndTurn} 
-              disabled={!gameActivated}
+              disabled={!gameActivated || !engineRef.current?.isMyTurn()}
               className={`px-4 py-1 rounded text-sm font-semibold transition-colors ${
-                gameActivated 
-                  ? 'bg-gray-600 hover:bg-gray-700 text-white' 
+                gameActivated && engineRef.current?.isMyTurn()
+                  ? 'bg-red-600 hover:bg-red-700 text-white' 
                   : 'bg-gray-500 cursor-not-allowed text-gray-300'
               }`}
             >
@@ -437,9 +791,21 @@ function GamePage() {
                 <div className="bg-black bg-opacity-60 text-white px-3 py-2 rounded-lg text-xs backdrop-blur-sm">
                   {gameState && (
                     <div className="flex gap-4 items-center">
+                      <span>Turn: <strong>{gameState.turnNumber || 1}</strong></span>
                       <span>Phase: <strong>{gameState.phase}</strong></span>
+                      <span>Current: <strong>{getCurrentPlayerName(gameState)}</strong></span>
                       <span>Players: <strong>{Object.keys(gameState.players || {}).length}</strong></span>
-                      <span>Map: <strong>{gameState.mapWidth}x{gameState.mapHeight}</strong></span>
+                      <span>Units: <strong>{gameState.units ? gameState.units.size || Array.from(gameState.units.values()).length : 0}</strong></span>
+                    </div>
+                  )}
+                  {engineRef.current && (
+                    <div className="mt-1 text-xs text-gray-400">
+                      <span>My Turn: <strong className={engineRef.current.isMyTurn() ? 'text-green-400' : 'text-red-400'}>
+                        {engineRef.current.isMyTurn() ? 'Yes' : 'No'}
+                      </strong></span>
+                      {engineRef.current.getSelectedUnitId() && (
+                        <span className="ml-2">Selected: <strong className="text-yellow-400">{engineRef.current.getSelectedUnitId()}</strong></span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -462,22 +828,84 @@ function GamePage() {
 
         {/* Sidebar */}
         <div className="w-80 bg-game-secondary flex flex-col">
+          {/* Turn Info */}
+          {gameState && (
+            <div className="p-4 border-b border-gray-700">
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="text-lg font-bold">Turn {gameState.turnNumber || 1}</h3>
+                <div className="text-sm text-gray-400">{gameState.phase}</div>
+              </div>
+              {engineRef.current && (
+                <div className={`text-sm p-2 rounded ${
+                  engineRef.current.isMyTurn() 
+                    ? 'bg-green-800 text-green-200' 
+                    : 'bg-gray-700 text-gray-300'
+                }`}>
+                  {engineRef.current.isMyTurn() ? '🎯 Your turn!' : '⏳ Waiting...'}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Players */}
           <div className="p-4 border-b border-gray-700">
             <h3 className="text-lg font-bold mb-4">Players</h3>
             <div className="space-y-2">
-              {gameState && Object.values(gameState.players || {}).map((player: any) => (
-                <div
-                  key={player.id}
-                  className="flex items-center justify-between p-2 bg-gray-800 rounded"
-                  style={{ borderLeft: `4px solid ${player.color}` }}
-                >
-                  <span>{player.username}</span>
-                  <span className={`text-sm ${player.isReady ? 'text-green-400' : 'text-gray-400'}`}>
-                    {player.isReady ? 'Ready' : 'Not Ready'}
-                  </span>
-                </div>
-              ))}
+              {gameState && Object.values(gameState.players || {}).map((player: any) => {
+                const isCurrentPlayer = player.isCurrentPlayer || false;
+                const isMe = player.id === user?.id;
+                const unitCount = gameState.units ? 
+                  Array.from(gameState.units.values()).filter((unit: any) => unit.playerId === player.id).length : 0;
+                
+                return (
+                  <div
+                    key={player.id}
+                    className={`p-3 rounded border-2 transition-all ${
+                      isCurrentPlayer 
+                        ? 'border-yellow-500 bg-yellow-900 bg-opacity-30' 
+                        : 'border-gray-600 bg-gray-800'
+                    }`}
+                    style={{ borderLeftWidth: '6px', borderLeftColor: player.color }}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold">
+                          {player.username}
+                          {isMe && <span className="text-xs text-blue-400 ml-1">(You)</span>}
+                        </span>
+                        {isCurrentPlayer && (
+                          <span className="text-xs bg-yellow-600 text-yellow-100 px-2 py-1 rounded">
+                            🎯 TURN
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-gray-400">
+                          {unitCount} units
+                        </div>
+                        {player.actionPoints !== undefined && (
+                          <div className="text-xs text-blue-400">
+                            AP: {player.actionPoints}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-between text-xs">
+                      <span className={`${
+                        player.isActive !== false ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        {player.isActive !== false ? '🟢 Online' : '🔴 Offline'}
+                      </span>
+                      <span className={`${
+                        player.isReady ? 'text-green-400' : 'text-gray-400'
+                      }`}>
+                        {player.isReady ? '✅ Ready' : '⏳ Not Ready'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
               
               {!gameState && gameData?.players.map((player) => (
                 <div
@@ -494,16 +922,109 @@ function GamePage() {
             </div>
           </div>
 
-          {/* Chat */}
-          <div className="flex-1 flex flex-col p-4">
-            <h3 className="text-lg font-bold mb-4">Chat</h3>
-            <div className="flex-1 overflow-y-auto space-y-2 mb-4">
-              {chatMessages.map((msg, index) => (
-                <div key={index} className="text-sm">
-                  <span className="font-bold">{msg.username}:</span> {msg.message}
-                </div>
-              ))}
+          {/* My Units */}
+          {gameState && gameState.units && engineRef.current?.isMyTurn() && (
+            <div className="p-4 border-b border-gray-700">
+              <h3 className="text-lg font-bold mb-4">Your Units</h3>
+              <div className="space-y-2">
+                {Array.from(gameState.units.values())
+                  .filter((unit: any) => unit.playerId === user?.id)
+                  .map((unit: any) => (
+                    <div
+                      key={unit.id}
+                      className={`p-2 rounded border transition-all cursor-pointer hover:bg-gray-700 ${
+                        engineRef.current?.getSelectedUnitId() === unit.id
+                          ? 'border-yellow-500 bg-yellow-900 bg-opacity-30'
+                          : 'border-gray-600 bg-gray-800'
+                      }`}
+                      onClick={() => engineRef.current?.selectUnit(unit.id)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold">
+                            {getUnitTypeIcon(unit.type)} {unit.type}
+                          </span>
+                          {(unit.hasMoved || unit.hasAttacked) && (
+                            <span className="text-xs bg-gray-600 text-gray-300 px-1 rounded">
+                              {unit.hasMoved && unit.hasAttacked ? 'Used' : unit.hasMoved ? 'Moved' : 'Attacked'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          ({unit.position.x}, {unit.position.z})
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between mt-1">
+                        <div className="text-xs">
+                          <span className="text-red-400">❤️ {unit.health}/{unit.maxHealth}</span>
+                          <span className="ml-2 text-blue-400">⚔️ {unit.attack}</span>
+                          <span className="ml-2 text-green-400">🛡️ {unit.defense}</span>
+                        </div>
+                        <div className="text-xs text-gray-400">
+                          Move: {unit.movement} | Range: {unit.range}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                {Array.from(gameState.units.values()).filter((unit: any) => unit.playerId === user?.id).length === 0 && (
+                  <div className="text-center text-gray-400 py-4">
+                    No units remaining
+                  </div>
+                )}
+              </div>
             </div>
+          )}
+
+          {/* Chat & Game Log */}
+          <div className="flex-1 flex flex-col p-4">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold">Game Log</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowDebugLogs(!showDebugLogs)}
+                  className={`text-xs px-2 py-1 rounded ${
+                    showDebugLogs ? 'bg-blue-600' : 'bg-gray-600'
+                  }`}
+                  title="Toggle debug logs"
+                >
+                  Debug
+                </button>
+              </div>
+            </div>
+            
+            <div ref={gameLogRef} className="flex-1 overflow-y-auto space-y-1 mb-4 text-sm">
+              {gameLog
+                .filter(entry => showDebugLogs || entry.type !== 'debug')
+                .map((entry) => {
+                  const timeStr = new Date(entry.timestamp).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  });
+                  
+                  return (
+                    <div key={entry.id} className={`p-2 rounded ${getLogEntryStyle(entry.type)}`}>
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          {entry.type === 'chat' && entry.username && (
+                            <span className="font-bold text-blue-300">{entry.username}: </span>
+                          )}
+                          {entry.type !== 'chat' && entry.username && (
+                            <span className="font-bold text-gray-300">{entry.username} </span>
+                          )}
+                          <span className={getMessageStyle(entry.type)}>{entry.message}</span>
+                        </div>
+                        <span className="text-xs text-gray-500 ml-2">{timeStr}</span>
+                      </div>
+                      {entry.type === 'player_event' && (
+                        <div className="text-xs text-gray-400 mt-1">
+                          {getEventIcon(entry.metadata?.event)} {entry.metadata?.event}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+            
             <div className="flex gap-2">
               <input
                 type="text"

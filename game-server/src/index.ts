@@ -1,4 +1,5 @@
 import { Server } from 'colyseus';
+import { WebSocketTransport } from '@colyseus/ws-transport';
 import { monitor } from '@colyseus/monitor';
 import { createServer } from 'http';
 import express from 'express';
@@ -11,8 +12,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const server = createServer(app);
+
 const gameServer = new Server({
-  server: createServer(app),
+  transport: new WebSocketTransport({
+    server: server,
+    pingInterval: 3000,
+    pingMaxRetries: 3,
+  })
 });
 
 // Register game room

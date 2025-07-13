@@ -16,11 +16,16 @@ interface GameInfo {
 export class UIManager {
   private advancedTexture: AdvancedDynamicTexture;
   private actionPanel!: StackPanel;
+  private onActionCallback?: (unitId: string, action: string) => void;
 
   constructor() {
     this.advancedTexture = AdvancedDynamicTexture.CreateFullscreenUI('UI');
     
     this.createActionPanel();
+  }
+
+  setActionCallback(callback: (unitId: string, action: string) => void): void {
+    this.onActionCallback = callback;
   }
 
 
@@ -78,8 +83,13 @@ export class UIManager {
   }
 
   private handleAction(unitId: string, action: string): void {
-    console.log(`Action ${action} for unit ${unitId}`);
-    // This would emit an event or call a callback
+    console.log(`🎯 UI Action: ${action} for unit ${unitId}`);
+    
+    if (this.onActionCallback) {
+      this.onActionCallback(unitId, action);
+    } else {
+      console.warn('⚠️ No action callback set in UIManager');
+    }
   }
 
   showMessage(message: string, duration: number = 3000): void {

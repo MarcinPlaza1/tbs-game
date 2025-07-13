@@ -265,4 +265,8 @@ export class UnitManager {
   getAllUnits(): UnitMesh[] {
     return Array.from(this.units.values());
   }
+
+  getUnitById(id: string): UnitMesh | null {
+    return this.units.get(id) || null;
+  }
 } 
