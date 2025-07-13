@@ -129,6 +129,15 @@ export const gameRouter = router({
         });
       }
 
+      // Check if user is a player in this game
+      const isPlayer = game.players.some(player => player.userId === ctx.user.id);
+      if (!isPlayer) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You are not authorized to access this game',
+        });
+      }
+
       return game;
     }),
 }); 
