@@ -1,0 +1,27 @@
+{
+  "version": "5",
+  "dialect": "pg",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1752347360323,
+      "tag": "0000_absent_morgan_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1752441720184,
+      "tag": "0001_huge_the_hand",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1752530931673,
+      "tag": "0002_hot_rawhide_kid",
+      "breakpoints": true
+    }
+  ]
+}

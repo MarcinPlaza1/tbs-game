@@ -112,7 +112,7 @@ Thumbs.db
 .bun/
 
 # Drizzle
-drizzle/
+drizzle/meta/
 migrations/
 
 # Game specific
