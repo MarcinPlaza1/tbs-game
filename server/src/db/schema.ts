@@ -43,6 +43,17 @@ export const rateLimitLog = pgTable('rate_limit_log', {
 
 // CSRF tokens table removed - using Authorization header + HttpOnly cookies provides sufficient protection
 
+export const activeGameSessions = pgTable('active_game_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  gameId: uuid('game_id').notNull().references(() => games.id, { onDelete: 'cascade' }),
+  colyseusRoomId: varchar('colyseus_room_id', { length: 255 }).notNull(),
+  sessionId: varchar('session_id', { length: 255 }), // Current Colyseus session ID
+  lastActivity: timestamp('last_activity').defaultNow().notNull(),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 export const games = pgTable('games', {
   id: uuid('id').defaultRandom().primaryKey(),
   status: varchar('status', { length: 20 }).notNull().default('waiting'),
@@ -52,6 +63,9 @@ export const games = pgTable('games', {
   mapId: uuid('map_id').notNull(),
   settings: jsonb('settings').notNull(),
   winnerId: uuid('winner_id'),
+  gameState: jsonb('game_state'), // Serialized game state for recovery
+  lastStateUpdate: timestamp('last_state_update'),
+  colyseusRoomId: varchar('colyseus_room_id', { length: 255 }), // Link to Colyseus room
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -120,5 +134,16 @@ export const passwordResetTokensRelations = relations(passwordResetTokens, ({ on
   user: one(users, {
     fields: [passwordResetTokens.userId],
     references: [users.id],
+  }),
+}));
+
+export const activeGameSessionsRelations = relations(activeGameSessions, ({ one }) => ({
+  user: one(users, {
+    fields: [activeGameSessions.userId],
+    references: [users.id],
+  }),
+  game: one(games, {
+    fields: [activeGameSessions.gameId],
+    references: [games.id],
   }),
 })); 

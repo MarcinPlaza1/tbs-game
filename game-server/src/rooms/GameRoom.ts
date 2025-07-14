@@ -11,6 +11,9 @@ import {
   Position
 } from '@tbs/shared';
 import { env } from '../config/env';
+import { db } from '../db/client';
+import { games, activeGameSessions } from '../db/schema';
+import { eq, and } from 'drizzle-orm';
 
 interface JoinOptions {
   gameId: string;
@@ -32,6 +35,8 @@ export class GameRoom extends Room<GameState> {
   private playerOrder: string[] = []; // Maintain consistent player order
   private authenticatedUsers: Map<string, { userId: string; username: string }> = new Map();
   private userIdToSessionId: Map<string, string> = new Map(); // Track userId -> sessionId mapping
+  private gameId: string = ''; // Store game ID for DB operations
+  private lastSaveTime: number = 0; // Track last save time
   
   async onAuth(client: Client, options: JoinOptions) {
     console.log('🔐 Authenticating client:', client.sessionId);
@@ -69,7 +74,7 @@ export class GameRoom extends Room<GameState> {
     }
   }
 
-      onCreate(options: CreateOptions) {
+      async onCreate(options: CreateOptions) {
     console.log('🏠 Creating GameRoom with options:', options);
     
     this.setState(new GameState());
@@ -79,8 +84,17 @@ export class GameRoom extends Room<GameState> {
     
     // Set initial game state
     this.state.gameId = options.gameId || this.roomId;
+    this.gameId = this.state.gameId;
     this.state.mapWidth = options.mapWidth || 20;
     this.state.mapHeight = options.mapHeight || 20;
+    
+    // Try to load existing game state from DB
+    const stateLoaded = await this.loadGameState();
+    if (stateLoaded) {
+      console.log('✅ Game state loaded from DB');
+    } else {
+      console.log('🆕 Starting with fresh game state');
+    }
     
     console.log('✅ GameRoom created successfully for gameId:', this.state.gameId);
     console.log('📊 Initial state set:', {
@@ -109,7 +123,7 @@ export class GameRoom extends Room<GameState> {
     console.log('✅ Game room created:', this.roomId, 'for game:', this.state.gameId);
   }
   
-  onJoin(client: Client, options: JoinOptions) {
+  async onJoin(client: Client, options: JoinOptions) {
     // Get authenticated user data
     const authData = this.authenticatedUsers.get(client.sessionId);
     if (!authData) {
@@ -177,6 +191,9 @@ export class GameRoom extends Room<GameState> {
       
       // Track userId -> sessionId mapping
       this.userIdToSessionId.set(authData.userId, client.sessionId);
+      
+      // Update active session in DB
+      await this.updateActiveSession(authData.userId, client.sessionId);
     }
     
     console.log(`✅ Player ${authData.username} joined room. Total players: ${this.state.players.size}`);
@@ -227,7 +244,7 @@ export class GameRoom extends Room<GameState> {
     // }
   }
   
-  onLeave(client: Client, consented: boolean) {
+  async onLeave(client: Client, consented: boolean) {
     console.log('👋 Player left:', client.sessionId, 'consented:', consented);
     
     // Clean up authenticated user data
@@ -269,7 +286,7 @@ export class GameRoom extends Room<GameState> {
               this.state.currentPlayerIndex--;
             } else if (playerIndex === this.state.currentPlayerIndex) {
               // Current player left, skip to next
-              this.advanceToNextPlayer();
+              await this.advanceToNextPlayer();
             }
             
             // Remove player's units
@@ -404,7 +421,7 @@ export class GameRoom extends Room<GameState> {
     unit.hasAttacked = true;
   }
   
-  private handleEndTurn(client: Client) {
+  private async handleEndTurn(client: Client) {
     const player = this.state.players.get(client.sessionId);
     if (!player || !this.isPlayerTurn(client.sessionId)) return;
     
@@ -419,10 +436,10 @@ export class GameRoom extends Room<GameState> {
     });
     
     // Advance to next player
-    this.advanceToNextPlayer();
+    await this.advanceToNextPlayer();
   }
 
-  private advanceToNextPlayer() {
+  private async advanceToNextPlayer() {
     this.state.currentPlayerIndex = (this.state.currentPlayerIndex + 1) % this.playerOrder.length;
     this.state.turnNumber++;
     
@@ -441,6 +458,9 @@ export class GameRoom extends Room<GameState> {
         currentPlayerName: currentPlayer.username,
         gameState: this.getGameStateForClient()
       });
+      
+      // Save game state after turn change
+      await this.saveGameState();
     }
   }
   
@@ -458,7 +478,7 @@ export class GameRoom extends Room<GameState> {
     });
   }
   
-  private startGame() {
+  private async startGame() {
     console.log('🎮 Starting game with', this.state.players.size, 'players');
     
     this.state.status = GameStatus.IN_PROGRESS;
@@ -496,6 +516,9 @@ export class GameRoom extends Room<GameState> {
       const player = this.state.players.get(sessionId);
       return player?.username;
     }));
+    
+    // Save game state after starting
+    await this.saveGameState();
   }
   
   private spawnUnitsForPlayer(player: Player, playerIndex: number) {
@@ -635,5 +658,207 @@ export class GameRoom extends Room<GameState> {
   private getPlayerColor(index: number): string {
     const colors = ['#FF0000', '#0000FF', '#00FF00', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#800080'];
     return colors[index % colors.length];
+  }
+
+  // Serialize game state for DB persistence
+  private serializeGameState() {
+    const players: any = {};
+    this.state.players.forEach((player, sessionId) => {
+      players[sessionId] = {
+        id: player.id,
+        username: player.username,
+        color: player.color,
+        isReady: player.isReady,
+        isActive: player.isActive,
+        actionPoints: player.actionPoints,
+      };
+    });
+
+    const units: any = {};
+    this.state.units.forEach((unit, unitId) => {
+      units[unitId] = {
+        id: unit.id,
+        playerId: unit.playerId,
+        type: unit.type,
+        position: {
+          x: unit.position.x,
+          y: unit.position.y,
+          z: unit.position.z,
+        },
+        health: unit.health,
+        maxHealth: unit.maxHealth,
+        attack: unit.attack,
+        defense: unit.defense,
+        movement: unit.movement,
+        range: unit.range,
+        hasMoved: unit.hasMoved,
+        hasAttacked: unit.hasAttacked,
+        isAlive: unit.isAlive,
+      };
+    });
+
+    return {
+      gameId: this.state.gameId,
+      status: this.state.status,
+      phase: this.state.phase,
+      currentPlayerIndex: this.state.currentPlayerIndex,
+      turnNumber: this.state.turnNumber,
+      mapWidth: this.state.mapWidth,
+      mapHeight: this.state.mapHeight,
+      players,
+      units,
+      playerOrder: this.playerOrder,
+      userIdToSessionId: Object.fromEntries(this.userIdToSessionId),
+      timestamp: Date.now(),
+    };
+  }
+
+  // Deserialize game state from DB
+  private deserializeGameState(serializedState: any) {
+    if (!serializedState) return false;
+
+    try {
+      console.log('🔄 Deserializing game state from DB');
+      
+      // Restore basic game state
+      this.state.gameId = serializedState.gameId;
+      this.state.status = serializedState.status;
+      this.state.phase = serializedState.phase;
+      this.state.currentPlayerIndex = serializedState.currentPlayerIndex;
+      this.state.turnNumber = serializedState.turnNumber;
+      this.state.mapWidth = serializedState.mapWidth;
+      this.state.mapHeight = serializedState.mapHeight;
+
+      // Restore players
+      this.state.players.clear();
+      Object.entries(serializedState.players).forEach(([sessionId, playerData]: [string, any]) => {
+        const player = new Player();
+        player.id = playerData.id;
+        player.username = playerData.username;
+        player.color = playerData.color;
+        player.isReady = playerData.isReady;
+        player.isActive = playerData.isActive;
+        player.actionPoints = playerData.actionPoints;
+        this.state.players.set(sessionId, player);
+      });
+
+      // Restore units
+      this.state.units.clear();
+      Object.entries(serializedState.units).forEach(([unitId, unitData]: [string, any]) => {
+        const unit = new Unit();
+        unit.id = unitData.id;
+        unit.playerId = unitData.playerId;
+        unit.type = unitData.type;
+        
+        const pos = new ColyseusPosition();
+        pos.x = unitData.position.x;
+        pos.y = unitData.position.y;
+        pos.z = unitData.position.z;
+        unit.position = pos;
+        
+        unit.health = unitData.health;
+        unit.maxHealth = unitData.maxHealth;
+        unit.attack = unitData.attack;
+        unit.defense = unitData.defense;
+        unit.movement = unitData.movement;
+        unit.range = unitData.range;
+        unit.hasMoved = unitData.hasMoved;
+        unit.hasAttacked = unitData.hasAttacked;
+        unit.isAlive = unitData.isAlive;
+        
+        this.state.units.set(unitId, unit);
+      });
+
+      // Restore internal state
+      this.playerOrder = serializedState.playerOrder || [];
+      this.userIdToSessionId = new Map(Object.entries(serializedState.userIdToSessionId || {}));
+
+      console.log('✅ Game state restored successfully');
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to deserialize game state:', error);
+      return false;
+    }
+  }
+
+  // Save game state to DB
+  private async saveGameState() {
+    if (!this.gameId) return;
+
+    try {
+      const serializedState = this.serializeGameState();
+      
+      await db.update(games)
+        .set({
+          status: this.state.status,
+          phase: this.state.phase,
+          currentPlayerIndex: this.state.currentPlayerIndex,
+          turnNumber: this.state.turnNumber,
+          gameState: serializedState,
+          lastStateUpdate: new Date(),
+          colyseusRoomId: this.roomId,
+        })
+        .where(eq(games.id, this.gameId));
+
+      this.lastSaveTime = Date.now();
+      console.log('💾 Game state saved to DB');
+    } catch (error) {
+      console.error('❌ Failed to save game state:', error);
+    }
+  }
+
+  // Load game state from DB
+  private async loadGameState(): Promise<boolean> {
+    if (!this.gameId) return false;
+
+    try {
+      const gameData = await db.query.games.findFirst({
+        where: eq(games.id, this.gameId),
+      });
+
+      if (gameData?.gameState) {
+        return this.deserializeGameState(gameData.gameState);
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('❌ Failed to load game state:', error);
+      return false;
+    }
+  }
+
+  // Update active game session
+  private async updateActiveSession(userId: string, sessionId: string) {
+    try {
+      // First try to update existing session
+      const existingSession = await db.query.activeGameSessions.findFirst({
+        where: and(
+          eq(activeGameSessions.userId, userId),
+          eq(activeGameSessions.gameId, this.gameId)
+        ),
+      });
+
+      if (existingSession) {
+        // Update existing session
+        await db.update(activeGameSessions)
+          .set({
+            sessionId,
+            lastActivity: new Date(),
+            isActive: true,
+          })
+          .where(eq(activeGameSessions.id, existingSession.id));
+      } else {
+        // Create new session
+        await db.insert(activeGameSessions).values({
+          userId,
+          gameId: this.gameId,
+          colyseusRoomId: this.roomId,
+          sessionId,
+          lastActivity: new Date(),
+        });
+      }
+    } catch (error) {
+      console.error('❌ Failed to update active session:', error);
+    }
   }
 } 

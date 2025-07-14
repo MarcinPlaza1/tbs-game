@@ -80,6 +80,220 @@ function GamePage() {
     setConnectionLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`]);
   };
 
+  const attemptReconnection = async () => {
+    try {
+      addLog('🔄 Reconnecting to game...');
+      
+      const client = new Client('ws://localhost:2567');
+      const token = localStorage.getItem('auth_token');
+      
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+      
+      const room = await client.joinOrCreate('game_room', {
+        gameId: gameId,
+        token: token,
+      });
+      
+      roomRef.current = room;
+      addLog('✅ Reconnected successfully!');
+      addGameLog('system', 'Reconnected to game successfully!', 'System', {
+        event: 'reconnection_success'
+      });
+      
+      // Reconnect room to game engine
+      if (engineRef.current && user) {
+        engineRef.current.setRoom(room);
+        engineRef.current.setCurrentPlayerId(user.id);
+      }
+      
+      // Re-setup event handlers
+      setupRoomEventHandlers(room);
+      
+    } catch (error: any) {
+      addLog(`❌ Reconnection failed: ${error.message}`);
+      addGameLog('system', `Reconnection failed: ${error.message}`, 'System', {
+        event: 'reconnection_failed'
+      });
+      setTimeout(() => {
+        attemptReconnection();
+      }, 5000); // Try again in 5 seconds
+         }
+   };
+
+  const setupRoomEventHandlers = (room: Room) => {
+    // Set up room event handlers
+    room.onStateChange((state: any) => {
+      addLog(`🔄 Game state updated - Players: ${Object.keys(state.players || {}).length}, Status: ${state.status}`);
+      console.log('Full game state:', state);
+      setGameState(state);
+      
+      // Update game engine with real state
+      if (engineRef.current) {
+        try {
+          engineRef.current.updateGameState(state);
+        } catch (error: any) {
+          addLog(`⚠️ GameEngine update failed: ${error.message}`);
+        }
+      }
+    });
+
+    room.onMessage('player_joined', (message) => {
+      addLog(`👤 Player joined: ${message.username}`);
+      addGameLog('player_event', `${message.username} joined the game`, 'System', {
+        playerId: message.playerId,
+        event: 'join'
+      });
+    });
+
+    room.onMessage('player_left', (message) => {
+      const status = message.temporary ? 'disconnected' : 'left';
+      addLog(`👋 Player ${status}: ${message.username}`);
+      addGameLog('player_event', `${message.username} ${status} the game`, 'System', {
+        playerId: message.playerId,
+        event: 'leave'
+      });
+    });
+
+    room.onMessage('game_started', (message) => {
+      addLog(`🎉 Game started! Current player: ${message.currentPlayer}`);
+      addGameLog('game_event', `Game started! Current player: ${message.currentPlayer}`, 'System', {
+        currentPlayer: message.currentPlayer,
+        event: 'game_start'
+      });
+    });
+
+    room.onMessage('turn_changed', (message) => {
+      addLog(`🔄 Turn changed to player ${message.currentPlayer} (Turn ${message.turnNumber})`);
+      
+      const isMyTurn = message.currentPlayer === user?.id;
+      addGameLog('game_event',
+        isMyTurn ? `It's your turn! (Turn ${message.turnNumber})` : `Turn ${message.turnNumber}: ${message.currentPlayerName}'s turn`,
+        'System',
+        {
+          currentPlayer: message.currentPlayer,
+          turnNumber: message.turnNumber,
+          isMyTurn,
+          event: 'turn_change'
+        }
+      );
+
+      // Handle turn change
+      handleTurnChange(message, isMyTurn);
+      
+      // Show turn notification
+      if (isMyTurn) {
+        addLog(`🎯 It's your turn!`);
+      } else {
+        addLog(`⏳ Waiting for player ${message.currentPlayer}...`);
+      }
+    });
+
+    room.onMessage('manual_state_update', (message) => {
+      const readyPlayers = message.players ? message.players.filter((p: any) => p.isReady).length : 0;
+      addLog(`📥 Manual state update - Players: ${message.playersCount}, Ready: ${readyPlayers}, Status: ${message.status}`);
+      
+      // Create a fake gameState for testing
+      const fakeState: any = {
+        gameId: message.gameId,
+        status: message.status,
+        phase: message.phase,
+        mapWidth: 20,
+        mapHeight: 20,
+        players: {},
+        units: new Map(),
+        turnNumber: message.turnNumber || 1,
+        currentPlayerIndex: 0
+      };
+      
+      // Add players with detailed logging
+      if (message.players) {
+        message.players.forEach((player: any) => {
+          fakeState.players[player.id] = player;
+          addLog(`👤 Player state: ${player.username} - Ready: ${player.isReady}`);
+        });
+        
+        setReadyPlayers(readyPlayers);
+      }
+      
+      setGameState(fakeState);
+      
+      // Update game engine with manual state
+      if (engineRef.current) {
+        try {
+          engineRef.current.updateGameState(fakeState);
+        } catch (error: any) {
+          addLog(`⚠️ GameEngine manual update failed: ${error.message}`);
+        }
+      }
+    });
+
+    room.onMessage('chat_message', (message) => {
+      addLog(`💬 Chat: ${message.username}: ${message.message}`);
+      addGameLog('chat', message.message, message.username, {
+        timestamp: message.timestamp,
+        received: true
+      });
+    });
+
+    room.onMessage('unit_action_result', (message) => {
+      addLog(`🎯 Unit action result: ${message.type} - ${message.success ? 'Success' : 'Failed'}`);
+      
+      if (message.success) {
+        addGameLog('action',
+          `✅ ${message.type.charAt(0).toUpperCase() + message.type.slice(1)} successful`,
+          user?.username || 'Player',
+          {
+            action: message.type,
+            success: true,
+            unitId: message.unitId
+          }
+        );
+      }
+    });
+
+    room.onMessage('action_failed', (message) => {
+      addLog(`❌ Action failed: ${message.reason}`);
+      addGameLog('action',
+        `❌ Action failed: ${message.reason}`,
+        user?.username || 'Player',
+        {
+          action: message.action,
+          success: false,
+          reason: message.reason
+        }
+      );
+    });
+
+    room.onMessage('error', (message) => {
+      addLog(`❌ Room error: ${message.message}`);
+      addGameLog('system', `Error: ${message.message}`, 'System', {
+        code: message.code,
+        event: 'error'
+      });
+    });
+
+    room.onLeave((code) => {
+      addLog(`👋 Left room with code: ${code}`);
+      
+      // If disconnected unexpectedly, try to reconnect
+      if (code !== 1000) { // 1000 = normal closure
+        addLog('🔄 Attempting to reconnect...');
+        setTimeout(() => {
+          attemptReconnection();
+        }, 2000);
+      } else {
+        navigate('/lobby');
+      }
+    });
+
+    room.onError((code, message) => {
+      addLog(`🚫 Room error: ${code} - ${message}`);
+      setError(`Connection error: ${message}`);
+    });
+  };
+
   // Simulate loading process
   const simulateLoading = async () => {
     const stages = [
@@ -148,11 +362,16 @@ function GamePage() {
         addLog('🌐 Connecting to Colyseus server...');
         const client = new Client('ws://localhost:2567');
         
+        // Get JWT token from localStorage
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+          throw new Error('No authentication token found');
+        }
+        
         addLog('🏠 Attempting to join/create room...');
         const room = await client.joinOrCreate('game_room', {
           gameId: gameId,
-          userId: user.id,
-          username: user.username,
+          token: token, // Pass JWT token for authentication
         });
         
         roomRef.current = room;
@@ -172,186 +391,9 @@ function GamePage() {
         }
 
         // Set up room event handlers
-        room.onStateChange((state: any) => {
-          addLog(`🔄 Game state updated - Players: ${Object.keys(state.players || {}).length}, Status: ${state.status}`);
-          console.log('Full game state:', state);
-          setGameState(state);
-          
-          // Update game engine with real state
-          if (engineRef.current) {
-            try {
-              engineRef.current.updateGameState(state);
-            } catch (error: any) {
-              addLog(`⚠️ GameEngine update failed: ${error.message}`);
-            }
-          }
-        });
+        setupRoomEventHandlers(room);
 
-        room.onMessage('player_joined', (message) => {
-          addLog(`👤 Player joined: ${message.username}`);
-          addGameLog('player_event', `${message.username} joined the game`, 'System', {
-            playerId: message.playerId,
-            event: 'join'
-          });
-        });
 
-        room.onMessage('player_left', (message) => {
-          addLog(`👋 Player left: ${message.username}`);
-          addGameLog('player_event', `${message.username} left the game`, 'System', {
-            playerId: message.playerId,
-            event: 'leave'
-          });
-        });
-
-        room.onMessage('game_started', (message) => {
-          addLog(`🎉 Game started! Current player: ${message.currentPlayer}`);
-          addGameLog('game_event', `Game started! Current player: ${message.currentPlayer}`, 'System', {
-            currentPlayer: message.currentPlayer,
-            event: 'game_start'
-          });
-        });
-
-        room.onMessage(ServerMessageType.TURN_CHANGED, (message) => {
-          addLog(`🔄 Turn changed to player ${message.currentPlayer} (Turn ${message.turnNumber})`);
-          
-          // Add to unified log
-          const isMyTurn = message.currentPlayer === user.id;
-          addGameLog('game_event', 
-            isMyTurn ? `It's your turn! (Turn ${message.turnNumber})` : `Player ${message.currentPlayer}'s turn (Turn ${message.turnNumber})`,
-            'System',
-            {
-              turnNumber: message.turnNumber,
-              currentPlayer: message.currentPlayer,
-              isMyTurn,
-              event: 'turn_change'
-            }
-          );
-          
-          // Complete turn reset and state update
-          handleTurnChange(message, isMyTurn);
-          
-          // Show turn notification
-          if (isMyTurn) {
-            addLog(`🎯 It's your turn!`);
-          } else {
-            addLog(`⏳ Waiting for player ${message.currentPlayer}...`);
-          }
-        });
-
-        room.onMessage('manual_state_update', (message) => {
-          const readyPlayers = message.players.filter((p: any) => p.isReady).length;
-          addLog(`📥 Manual state update - Players: ${message.playersCount}, Ready: ${readyPlayers}, Status: ${message.status}`);
-          console.log('Manual state update:', message);
-          
-          // Create a fake gameState for testing
-          const fakeState: any = {
-            gameId: message.gameId,
-            status: message.status,
-            phase: message.phase,
-            mapWidth: 20,
-            mapHeight: 20,
-            players: {},
-            units: new Map(), // Add empty units map to prevent errors
-            turnNumber: message.turnNumber || 1,
-            currentPlayerIndex: 0
-          };
-          
-          // Add players with detailed logging
-          message.players.forEach((player: any) => {
-            fakeState.players[player.id] = player;
-            addLog(`👤 Player state: ${player.username} - Ready: ${player.isReady}`);
-          });
-          
-          setGameState(fakeState);
-          
-          // Update game engine with manual state
-          if (engineRef.current) {
-            try {
-              engineRef.current.updateGameState(fakeState);
-            } catch (error: any) {
-              addLog(`⚠️ GameEngine manual update failed: ${error.message}`);
-            }
-          }
-        });
-
-        room.onMessage('chat_message', (message) => {
-          addLog(`💬 Chat: ${message.username}: ${message.message}`);
-          
-          // Add to unified log
-          addGameLog('chat', message.message, message.username, {
-            timestamp: message.timestamp
-          });
-        });
-
-        room.onMessage(ServerMessageType.UNIT_ACTION_RESULT, (message) => {
-          addLog(`🎯 Unit action result: ${message.type} - ${message.success ? 'Success' : 'Failed'}`);
-          
-          if (message.success) {
-            // Show success message
-            if (engineRef.current && message.type) {
-              addLog(`✅ ${message.type.charAt(0).toUpperCase() + message.type.slice(1)} successful`);
-              
-              // Add to unified log
-              addGameLog('action', 
-                `${message.type.charAt(0).toUpperCase() + message.type.slice(1)} successful`,
-                user?.username,
-                {
-                  action: message.type,
-                  success: true,
-                  unitId: message.unitId,
-                  event: 'unit_action_success'
-                }
-              );
-            }
-          } else if (message.reason) {
-            // Show error message if action failed
-            if (engineRef.current) {
-              addLog(`❌ Action failed: ${message.reason}`);
-              
-              // Add to unified log
-              addGameLog('action', 
-                `Action failed: ${message.reason}`,
-                user?.username,
-                {
-                  action: message.type,
-                  success: false,
-                  reason: message.reason,
-                  unitId: message.unitId,
-                  event: 'unit_action_failed'
-                }
-              );
-            }
-          }
-          
-          // Update game state if provided
-          if (message.gameState) {
-            console.log('🔄 Updating game state from unit action result');
-            setGameState(message.gameState);
-            
-            if (engineRef.current) {
-              try {
-                engineRef.current.updateGameState(message.gameState);
-              } catch (error: any) {
-                addLog(`⚠️ GameEngine update failed: ${error.message}`);
-              }
-            }
-          }
-        });
-
-        room.onMessage('error', (message) => {
-          addLog(`❌ Room error: ${message.message}`);
-          setError(message.message || 'Game error occurred');
-        });
-
-        room.onLeave((code) => {
-          addLog(`👋 Left room with code: ${code}`);
-          navigate('/lobby');
-        });
-
-        room.onError((code, message) => {
-          addLog(`🚫 Room error: ${code} - ${message}`);
-          setError(`Connection error: ${message}`);
-        });
 
         setIsLoading(false);
         addLog('🎉 Game connection established successfully!');
