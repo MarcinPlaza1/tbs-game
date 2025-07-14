@@ -14,6 +14,7 @@ export interface User {
 export interface Context {
   db: typeof db;
   user?: User;
+  req: CreateHTTPContextOptions['req'];
 }
 
 export async function createContext({ req }: CreateHTTPContextOptions): Promise<Context> {
@@ -50,5 +51,6 @@ export async function createContext({ req }: CreateHTTPContextOptions): Promise<
   return {
     db,
     user,
+    req,
   };
 } 

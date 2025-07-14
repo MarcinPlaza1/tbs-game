@@ -1,4 +1,5 @@
 import { Room, Client } from 'colyseus';
+import jwt from 'jsonwebtoken';
 import { GameState, Player, Unit, Position as ColyseusPosition } from '../schemas/GameState';
 import { 
   ClientMessageType, 
@@ -9,11 +10,13 @@ import {
   ServerMessageType,
   Position
 } from '@tbs/shared';
+import { env } from '../config/env';
 
 interface JoinOptions {
   gameId: string;
-  userId: string;
-  username: string;
+  token?: string;
+  userId?: string;
+  username?: string;
   playerData?: any;
 }
 
@@ -27,11 +30,52 @@ interface CreateOptions {
 export class GameRoom extends Room<GameState> {
   maxClients = 8;
   private playerOrder: string[] = []; // Maintain consistent player order
+  private authenticatedUsers: Map<string, { userId: string; username: string }> = new Map();
+  private userIdToSessionId: Map<string, string> = new Map(); // Track userId -> sessionId mapping
   
-  onCreate(options: CreateOptions) {
+  async onAuth(client: Client, options: JoinOptions) {
+    console.log('🔐 Authenticating client:', client.sessionId);
+    
+    try {
+      // Get token from query parameters or options
+      const token = options.token || client.auth?.token;
+      
+      if (!token) {
+        console.log('❌ No token provided');
+        return false;
+      }
+      
+      // Verify JWT token
+      const decoded = jwt.verify(token, env.JWT_SECRET) as any;
+      
+      // Validate token structure
+      if (!decoded || typeof decoded !== 'object' || !decoded.userId || typeof decoded.userId !== 'string') {
+        console.log('❌ Invalid token structure');
+        return false;
+      }
+      
+      // Store authenticated user data
+      this.authenticatedUsers.set(client.sessionId, {
+        userId: decoded.userId,
+        username: decoded.username || `Player_${decoded.userId.slice(0, 8)}`,
+      });
+      
+      console.log('✅ Client authenticated:', decoded.userId);
+      return true;
+      
+    } catch (error) {
+      console.log('❌ Authentication failed:', error.message);
+      return false;
+    }
+  }
+
+      onCreate(options: CreateOptions) {
     console.log('🏠 Creating GameRoom with options:', options);
     
     this.setState(new GameState());
+    
+    // Enable reconnection with 30 second window
+    this.allowReconnection(30);
     
     // Set initial game state
     this.state.gameId = options.gameId || this.roomId;
@@ -66,30 +110,76 @@ export class GameRoom extends Room<GameState> {
   }
   
   onJoin(client: Client, options: JoinOptions) {
-    console.log('👤 Player joining:', client.sessionId, options.username, 'Game ID:', options.gameId);
-    
-    // Prevent joining if game is in progress
-    if (this.state.status === GameStatus.IN_PROGRESS) {
+    // Get authenticated user data
+    const authData = this.authenticatedUsers.get(client.sessionId);
+    if (!authData) {
+      console.log('❌ No authenticated data for client:', client.sessionId);
       client.send(ServerMessageType.ERROR, {
-        message: 'Game already in progress',
-        code: 'GAME_IN_PROGRESS',
+        message: 'Authentication required',
+        code: 'AUTHENTICATION_REQUIRED',
       });
       client.leave();
       return;
     }
     
-    // Create new player
-    const player = new Player();
-    player.id = options.userId;
-    player.username = options.username;
-    player.color = this.getPlayerColor(this.state.players.size);
+    console.log('👤 Player joining:', client.sessionId, authData.username, 'Game ID:', options.gameId);
     
-    this.state.players.set(client.sessionId, player);
+    // Check if this is a reconnection
+    const previousSessionId = this.userIdToSessionId.get(authData.userId);
+    const isReconnection = previousSessionId && this.state.players.has(previousSessionId);
     
-    // Add to player order for consistent turn management
-    this.playerOrder.push(client.sessionId);
+    if (isReconnection) {
+      console.log('🔄 Player reconnecting:', authData.username);
+      
+      // Update session mapping
+      this.userIdToSessionId.set(authData.userId, client.sessionId);
+      
+      // Get existing player data
+      const existingPlayer = this.state.players.get(previousSessionId);
+      if (existingPlayer) {
+        // Transfer player data to new session
+        this.state.players.set(client.sessionId, existingPlayer);
+        this.state.players.delete(previousSessionId);
+        
+        // Update player order
+        const orderIndex = this.playerOrder.indexOf(previousSessionId);
+        if (orderIndex > -1) {
+          this.playerOrder[orderIndex] = client.sessionId;
+        }
+        
+        // Mark player as active again
+        existingPlayer.isActive = true;
+        
+        console.log('✅ Player reconnected successfully:', authData.username);
+      }
+    } else {
+      // New player joining
+      // Prevent joining if game is in progress and not a reconnection
+      if (this.state.status === GameStatus.IN_PROGRESS) {
+        client.send(ServerMessageType.ERROR, {
+          message: 'Game already in progress',
+          code: 'GAME_IN_PROGRESS',
+        });
+        client.leave();
+        return;
+      }
+      
+      // Create new player
+      const player = new Player();
+      player.id = authData.userId;
+      player.username = authData.username;
+      player.color = this.getPlayerColor(this.state.players.size);
+      
+      this.state.players.set(client.sessionId, player);
+      
+      // Add to player order for consistent turn management
+      this.playerOrder.push(client.sessionId);
+      
+      // Track userId -> sessionId mapping
+      this.userIdToSessionId.set(authData.userId, client.sessionId);
+    }
     
-    console.log(`✅ Player ${options.username} joined room. Total players: ${this.state.players.size}`);
+    console.log(`✅ Player ${authData.username} joined room. Total players: ${this.state.players.size}`);
     console.log('🎲 Current game state:', {
       gameId: this.state.gameId,
       status: this.state.status,
@@ -140,17 +230,28 @@ export class GameRoom extends Room<GameState> {
   onLeave(client: Client, consented: boolean) {
     console.log('👋 Player left:', client.sessionId, 'consented:', consented);
     
+    // Clean up authenticated user data
+    this.authenticatedUsers.delete(client.sessionId);
+    
     const player = this.state.players.get(client.sessionId);
     if (player) {
+      // Mark player as inactive but don't remove immediately (allow reconnection)
       player.isActive = false;
       
-      this.broadcast(ServerMessageType.PLAYER_LEFT, {
-        playerId: player.id,
-        username: player.username,
-      });
+      console.log('⏳ Player marked as inactive, allowing reconnection:', player.username);
       
-      // Remove player if room is still in waiting state
-      if (this.state.status === GameStatus.WAITING) {
+      // Only remove player if they explicitly left (consented = true) or if room is in waiting state
+      if (consented || this.state.status === GameStatus.WAITING) {
+        console.log('🗑️ Removing player permanently:', player.username);
+        
+        // Clean up user mapping
+        this.userIdToSessionId.delete(player.id);
+        
+        this.broadcast(ServerMessageType.PLAYER_LEFT, {
+          playerId: player.id,
+          username: player.username,
+        });
+        
         this.state.players.delete(client.sessionId);
         
         // Remove from player order
@@ -158,32 +259,38 @@ export class GameRoom extends Room<GameState> {
         if (index > -1) {
           this.playerOrder.splice(index, 1);
         }
-      } else {
+        
         // If game is in progress, handle player leaving during game
-        const playerIndex = this.playerOrder.indexOf(client.sessionId);
-        if (playerIndex > -1) {
-          // Adjust current player index if needed
-          if (playerIndex < this.state.currentPlayerIndex) {
-            this.state.currentPlayerIndex--;
-          } else if (playerIndex === this.state.currentPlayerIndex) {
-            // Current player left, skip to next
-            this.advanceToNextPlayer();
-          }
-          
-          // Remove from order
-          this.playerOrder.splice(playerIndex, 1);
-          
-          // Remove player's units
-          const unitsToRemove: string[] = [];
-          this.state.units.forEach((unit, unitId) => {
-            if (unit.playerId === player.id) {
-              unitsToRemove.push(unitId);
+        if (this.state.status === GameStatus.IN_PROGRESS) {
+          const playerIndex = this.playerOrder.indexOf(client.sessionId);
+          if (playerIndex > -1) {
+            // Adjust current player index if needed
+            if (playerIndex < this.state.currentPlayerIndex) {
+              this.state.currentPlayerIndex--;
+            } else if (playerIndex === this.state.currentPlayerIndex) {
+              // Current player left, skip to next
+              this.advanceToNextPlayer();
             }
-          });
-          unitsToRemove.forEach(unitId => {
-            this.state.units.delete(unitId);
-          });
+            
+            // Remove player's units
+            const unitsToRemove: string[] = [];
+            this.state.units.forEach((unit, unitId) => {
+              if (unit.playerId === player.id) {
+                unitsToRemove.push(unitId);
+              }
+            });
+            unitsToRemove.forEach(unitId => {
+              this.state.units.delete(unitId);
+            });
+          }
         }
+      } else {
+        // Player disconnected but didn't explicitly leave - allow reconnection
+        this.broadcast(ServerMessageType.PLAYER_LEFT, {
+          playerId: player.id,
+          username: player.username,
+          temporary: true, // Indicate this is a temporary disconnection
+        });
       }
     }
   }

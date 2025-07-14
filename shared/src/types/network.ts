@@ -32,7 +32,8 @@ export enum ServerMessageType {
   GAME_STARTED = 'game_started',
   GAME_ENDED = 'game_ended',
   ERROR = 'error',
-  CHAT_MESSAGE = 'chat_message'
+  CHAT_MESSAGE = 'chat_message',
+  AUTHENTICATION_REQUIRED = 'authentication_required'
 }
 
 // Specific message payloads

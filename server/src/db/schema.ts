@@ -16,8 +16,11 @@ export const users = pgTable('users', {
 export const refreshTokens = pgTable('refresh_tokens', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  token: text('token').notNull().unique(),
+  tokenHash: text('token_hash').notNull().unique(),
   expiresAt: timestamp('expires_at').notNull(),
+  ipAddress: varchar('ip_address', { length: 45 }),
+  userAgent: text('user_agent'),
+  isRevoked: boolean('is_revoked').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -38,13 +41,7 @@ export const rateLimitLog = pgTable('rate_limit_log', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-export const csrfTokens = pgTable('csrf_tokens', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  sessionId: varchar('session_id', { length: 255 }).notNull(),
-  token: text('token').notNull().unique(),
-  expiresAt: timestamp('expires_at').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+// CSRF tokens table removed - using Authorization header + HttpOnly cookies provides sufficient protection
 
 export const games = pgTable('games', {
   id: uuid('id').defaultRandom().primaryKey(),

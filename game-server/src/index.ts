@@ -5,8 +5,9 @@ import { createServer } from 'http';
 import express from 'express';
 import cors from 'cors';
 import { GameRoom } from './rooms/GameRoom';
+import { env } from './config/env';
 
-const port = Number(process.env.GAME_SERVER_PORT) || 2567;
+const port = env.GAME_SERVER_PORT;
 const app = express();
 
 app.use(cors());
@@ -19,7 +20,9 @@ const gameServer = new Server({
     server: server,
     pingInterval: 3000,
     pingMaxRetries: 3,
-  })
+  }),
+  // Enable reconnection capability
+  gracefullyShutdown: false,
 });
 
 // Register game room
