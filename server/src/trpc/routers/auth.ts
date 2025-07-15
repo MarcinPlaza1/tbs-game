@@ -3,7 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { TRPCError } from '@trpc/server';
 import { router, publicProcedure } from '../trpc';
-import { users, refreshTokens, passwordResetTokens, csrfTokens } from '../../db/schema';
+import { users, refreshTokens, passwordResetTokens } from '../../db/schema';
 import { eq, lt } from 'drizzle-orm';
 import { env } from '../../config/env';
 import { randomBytes } from 'crypto';
@@ -38,7 +38,28 @@ const generateRefreshToken = (): string => {
   return randomBytes(32).toString('hex');
 };
 
-const generateTokenPair = (userId: string) => {
+const hashRefreshToken = async (token: string): Promise<string> => {
+  return await bcrypt.hash(token, 10);
+};
+
+const verifyRefreshToken = async (token: string, hash: string): Promise<boolean> => {
+  return await bcrypt.compare(token, hash);
+};
+
+const getClientIP = (req: any): string => {
+  return req.headers['x-forwarded-for'] || 
+         req.headers['x-real-ip'] || 
+         req.connection?.remoteAddress || 
+         req.socket?.remoteAddress || 
+         req.ip || 
+         'unknown';
+};
+
+const getClientUserAgent = (req: any): string => {
+  return req.headers['user-agent'] || 'unknown';
+};
+
+const generateTokenPair = async (userId: string, ipAddress?: string, userAgent?: string) => {
   const accessToken = jwt.sign(
     { userId },
     env.JWT_SECRET,
@@ -46,9 +67,10 @@ const generateTokenPair = (userId: string) => {
   );
   
   const refreshToken = generateRefreshToken();
+  const refreshTokenHash = await hashRefreshToken(refreshToken);
   const refreshTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
   
-  return { accessToken, refreshToken, refreshTokenExpiresAt };
+  return { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt, ipAddress, userAgent };
 };
 
 export const authRouter = router({
@@ -93,13 +115,17 @@ export const authRouter = router({
         .returning();
 
       // Generate token pair
-      const { accessToken, refreshToken, refreshTokenExpiresAt } = generateTokenPair(newUser.id);
+      const ipAddress = getClientIP(ctx.req);
+      const userAgent = getClientUserAgent(ctx.req);
+      const { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(newUser.id, ipAddress, userAgent);
 
       // Store refresh token in database
       await ctx.db.insert(refreshTokens).values({
         userId: newUser.id,
-        token: refreshToken,
+        tokenHash: refreshTokenHash,
         expiresAt: refreshTokenExpiresAt,
+        ipAddress,
+        userAgent,
       });
 
       return {
@@ -145,13 +171,17 @@ export const authRouter = router({
       }
 
       // Generate token pair
-      const { accessToken, refreshToken, refreshTokenExpiresAt } = generateTokenPair(user.id);
+      const ipAddress = getClientIP(ctx.req);
+      const userAgent = getClientUserAgent(ctx.req);
+      const { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(user.id, ipAddress, userAgent);
 
       // Store refresh token in database
       await ctx.db.insert(refreshTokens).values({
         userId: user.id,
-        token: refreshToken,
+        tokenHash: refreshTokenHash,
         expiresAt: refreshTokenExpiresAt,
+        ipAddress,
+        userAgent,
       });
 
       return {
@@ -174,15 +204,47 @@ export const authRouter = router({
       const identifier = ctx.user?.id || 'anonymous';
       checkRateLimit('auth.refreshToken', identifier);
 
-      // Find and validate refresh token
-      const tokenRecord = await ctx.db.query.refreshTokens.findFirst({
-        where: eq(refreshTokens.token, refreshToken),
+      // Find all non-revoked refresh tokens for potential matching
+      const tokenRecords = await ctx.db.query.refreshTokens.findMany({
+        where: eq(refreshTokens.isRevoked, false),
         with: {
           user: true,
         },
       });
 
-      if (!tokenRecord) {
+      // Find matching token by comparing hashes
+      let matchingTokenRecord = null;
+      for (const record of tokenRecords) {
+        if (await verifyRefreshToken(refreshToken, record.tokenHash)) {
+          matchingTokenRecord = record;
+          break;
+        }
+      }
+
+      if (!matchingTokenRecord) {
+        // Check if token was already used (revoked) - potential security breach
+        const revokedTokenRecords = await ctx.db.query.refreshTokens.findMany({
+          where: eq(refreshTokens.isRevoked, true),
+          with: {
+            user: true,
+          },
+        });
+
+        for (const record of revokedTokenRecords) {
+          if (await verifyRefreshToken(refreshToken, record.tokenHash)) {
+            // Token reuse detected - revoke all tokens for this user
+            console.log('🚨 Token reuse detected for user:', record.userId);
+            await ctx.db.update(refreshTokens)
+              .set({ isRevoked: true })
+              .where(eq(refreshTokens.userId, record.userId));
+            
+            throw new TRPCError({
+              code: 'UNAUTHORIZED',
+              message: 'Token reuse detected. All sessions have been terminated.',
+            });
+          }
+        }
+
         throw new TRPCError({
           code: 'UNAUTHORIZED',
           message: 'Invalid refresh token',
@@ -190,9 +252,11 @@ export const authRouter = router({
       }
 
       // Check if token is expired
-      if (tokenRecord.expiresAt < new Date()) {
+      if (matchingTokenRecord.expiresAt < new Date()) {
         // Delete expired token
-        await ctx.db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
+        await ctx.db.update(refreshTokens)
+          .set({ isRevoked: true })
+          .where(eq(refreshTokens.id, matchingTokenRecord.id));
         throw new TRPCError({
           code: 'UNAUTHORIZED',
           message: 'Refresh token expired',
@@ -200,21 +264,29 @@ export const authRouter = router({
       }
 
       // Generate new token pair
-      const { accessToken, refreshToken: newRefreshToken, refreshTokenExpiresAt } = generateTokenPair(tokenRecord.userId);
+      const ipAddress = getClientIP(ctx.req);
+      const userAgent = getClientUserAgent(ctx.req);
+      const { accessToken, refreshToken: newRefreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(matchingTokenRecord.userId, ipAddress, userAgent);
 
-      // Replace old refresh token with new one
-      await ctx.db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
+      // Revoke old refresh token
+      await ctx.db.update(refreshTokens)
+        .set({ isRevoked: true })
+        .where(eq(refreshTokens.id, matchingTokenRecord.id));
+
+      // Insert new refresh token
       await ctx.db.insert(refreshTokens).values({
-        userId: tokenRecord.userId,
-        token: newRefreshToken,
+        userId: matchingTokenRecord.userId,
+        tokenHash: refreshTokenHash,
         expiresAt: refreshTokenExpiresAt,
+        ipAddress,
+        userAgent,
       });
 
       return {
         user: {
-          id: tokenRecord.user.id,
-          username: tokenRecord.user.username,
-          email: tokenRecord.user.email,
+          id: matchingTokenRecord.user.id,
+          username: matchingTokenRecord.user.username,
+          email: matchingTokenRecord.user.email,
         },
         token: accessToken,
         refreshToken: newRefreshToken,
@@ -226,8 +298,19 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { refreshToken } = input;
 
-      // Delete refresh token from database
-      await ctx.db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
+      // Find and revoke refresh token
+      const tokenRecords = await ctx.db.query.refreshTokens.findMany({
+        where: eq(refreshTokens.isRevoked, false),
+      });
+
+      for (const record of tokenRecords) {
+        if (await verifyRefreshToken(refreshToken, record.tokenHash)) {
+          await ctx.db.update(refreshTokens)
+            .set({ isRevoked: true })
+            .where(eq(refreshTokens.id, record.id));
+          break;
+        }
+      }
 
       return { success: true };
     }),
@@ -313,8 +396,28 @@ export const authRouter = router({
       // Delete used reset token
       await ctx.db.delete(passwordResetTokens).where(eq(passwordResetTokens.token, token));
 
-      // Delete all refresh tokens for this user (force re-login)
-      await ctx.db.delete(refreshTokens).where(eq(refreshTokens.userId, resetToken.userId));
+      // Revoke all refresh tokens for this user (force re-login)
+      await ctx.db.update(refreshTokens)
+        .set({ isRevoked: true })
+        .where(eq(refreshTokens.userId, resetToken.userId));
+
+      return { success: true };
+    }),
+
+  // Revoke all sessions for current user
+  revokeAllSessions: publicProcedure
+    .mutation(async ({ ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Not authenticated',
+        });
+      }
+
+      // Revoke all refresh tokens for this user
+      await ctx.db.update(refreshTokens)
+        .set({ isRevoked: true })
+        .where(eq(refreshTokens.userId, ctx.user.id));
 
       return { success: true };
     }),
@@ -411,32 +514,5 @@ export const authRouter = router({
       };
     }),
 
-  // Generate CSRF token
-  generateCSRFToken: publicProcedure
-    .mutation(async ({ ctx }) => {
-      const sessionId = ctx.user?.id || 'anonymous';
-      const token = randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-      try {
-        // Clean up old tokens for this session
-        await ctx.db
-          .delete(csrfTokens)
-          .where(eq(csrfTokens.sessionId, sessionId));
-
-        // Insert new token
-        await ctx.db.insert(csrfTokens).values({
-          sessionId,
-          token,
-          expiresAt,
-        });
-
-        return { token };
-      } catch (error) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'Failed to generate CSRF token',
-        });
-      }
-    }),
+  // CSRF tokens removed - using Authorization header + HttpOnly cookies provides sufficient protection
 }); 

@@ -16,8 +16,11 @@ export const users = pgTable('users', {
 export const refreshTokens = pgTable('refresh_tokens', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  token: text('token').notNull().unique(),
+  tokenHash: text('token_hash').notNull().unique(),
   expiresAt: timestamp('expires_at').notNull(),
+  ipAddress: varchar('ip_address', { length: 45 }),
+  userAgent: text('user_agent'),
+  isRevoked: boolean('is_revoked').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -38,11 +41,16 @@ export const rateLimitLog = pgTable('rate_limit_log', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-export const csrfTokens = pgTable('csrf_tokens', {
+// CSRF tokens table removed - using Authorization header + HttpOnly cookies provides sufficient protection
+
+export const activeGameSessions = pgTable('active_game_sessions', {
   id: uuid('id').defaultRandom().primaryKey(),
-  sessionId: varchar('session_id', { length: 255 }).notNull(),
-  token: text('token').notNull().unique(),
-  expiresAt: timestamp('expires_at').notNull(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  gameId: uuid('game_id').notNull().references(() => games.id, { onDelete: 'cascade' }),
+  colyseusRoomId: varchar('colyseus_room_id', { length: 255 }).notNull(),
+  sessionId: varchar('session_id', { length: 255 }), // Current Colyseus session ID
+  lastActivity: timestamp('last_activity').defaultNow().notNull(),
+  isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -55,6 +63,9 @@ export const games = pgTable('games', {
   mapId: uuid('map_id').notNull(),
   settings: jsonb('settings').notNull(),
   winnerId: uuid('winner_id'),
+  gameState: jsonb('game_state'), // Serialized game state for recovery
+  lastStateUpdate: timestamp('last_state_update'),
+  colyseusRoomId: varchar('colyseus_room_id', { length: 255 }), // Link to Colyseus room
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -123,5 +134,16 @@ export const passwordResetTokensRelations = relations(passwordResetTokens, ({ on
   user: one(users, {
     fields: [passwordResetTokens.userId],
     references: [users.id],
+  }),
+}));
+
+export const activeGameSessionsRelations = relations(activeGameSessions, ({ one }) => ({
+  user: one(users, {
+    fields: [activeGameSessions.userId],
+    references: [users.id],
+  }),
+  game: one(games, {
+    fields: [activeGameSessions.gameId],
+    references: [games.id],
   }),
 })); 
