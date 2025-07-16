@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { AppRouter } from '../../../server/src/trpc/router';
 import { useAuthStore } from '../stores/authStore';
-import { TRPCClientError } from '@trpc/client';
 
 export const trpc = createTRPCReact<AppRouter>();
 

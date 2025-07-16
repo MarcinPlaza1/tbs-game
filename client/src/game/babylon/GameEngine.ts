@@ -4,9 +4,12 @@ import {
   UniversalCamera,
   Vector3,
   HemisphericLight,
+  DirectionalLight,
   Color3,
   WebGPUEngine,
   KeyboardEventTypes,
+  EngineOptions,
+  ShadowGenerator,
 } from '@babylonjs/core';
 import { MapManager } from '../managers/MapManager';
 import { UnitManager } from '../managers/UnitManager';
@@ -31,9 +34,31 @@ export class GameEngine {
   private lastGameState: GameState | null = null;
   private currentTurn: number = 0;
   private currentPlayerIndex: number = 0;
+  private shadowGenerator!: ShadowGenerator;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
+  }
+
+  private setupCanvasForHighQuality(): void {
+    // Get device pixel ratio for high-DPI displays
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    
+    // Get the display size (CSS pixels) - use fixed size since React controls CSS dimensions
+    const displayWidth = 800;
+    const displayHeight = 600;
+    
+    // Calculate the actual size in device pixels
+    const actualWidth = Math.floor(displayWidth * devicePixelRatio);
+    const actualHeight = Math.floor(displayHeight * devicePixelRatio);
+    
+    // Set the actual size of the canvas (internal resolution)
+    this.canvas.width = actualWidth;
+    this.canvas.height = actualHeight;
+    
+    // CSS dimensions are controlled by React component, not here
+    
+    console.log(`🖥️ Canvas setup: ${displayWidth}x${displayHeight} CSS, ${actualWidth}x${actualHeight} pixels (ratio: ${devicePixelRatio})`);
   }
 
   setRoom(room: Room): void {
@@ -45,14 +70,44 @@ export class GameEngine {
   }
 
   async initialize(): Promise<void> {
-    // Try to use WebGPU, fallback to WebGL
+    // Ensure canvas is properly sized before engine initialization
+    this.setupCanvasForHighQuality();
+    
+    // Verify canvas has proper dimensions
+    if (this.canvas.width === 0 || this.canvas.height === 0) {
+      console.warn('⚠️ Canvas has invalid dimensions, using fallback size');
+      this.canvas.width = 800;
+      this.canvas.height = 600;
+    }
+    
+    // Try to use WebGPU, fallback to WebGL with enhanced options
     const webGPUSupported = await WebGPUEngine.IsSupportedAsync;
     
     if (webGPUSupported) {
+      console.log('🚀 Using WebGPU engine');
       this.engine = new WebGPUEngine(this.canvas);
       await (this.engine as WebGPUEngine).initAsync();
     } else {
-      this.engine = new Engine(this.canvas, true);
+      console.log('🎮 Using WebGL engine with enhanced settings');
+      
+      // Enhanced WebGL engine options for better quality
+      const engineOptions: EngineOptions = {
+        antialias: true,
+        stencil: true,
+        preserveDrawingBuffer: false,
+        premultipliedAlpha: false,
+        powerPreference: "high-performance",
+        doNotHandleContextLost: true
+      };
+      
+      this.engine = new Engine(this.canvas, true, engineOptions, true);
+    }
+    
+    // Set the hardware scaling level for better performance on high-DPI displays
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    if (devicePixelRatio > 1) {
+      this.engine.setHardwareScalingLevel(1 / Math.min(devicePixelRatio, 2));
+      console.log(`📱 Hardware scaling adjusted for pixel ratio: ${devicePixelRatio}`);
     }
 
     this.createScene();
@@ -65,14 +120,18 @@ export class GameEngine {
     this.inputManager = new InputManager(this.scene, this.camera);
     this.uiManager = new UIManager();
     
+    // Connect shadow generator to managers
+    this.mapManager.setShadowGenerator(this.shadowGenerator);
+    this.unitManager.setShadowGenerator(this.shadowGenerator);
+    
     // Set up UI action callback
     this.uiManager.setActionCallback((unitId: string, action: string) => {
       this.handleUnitAction(unitId, action);
     });
 
-    // Handle window resize
+    // Handle window resize with improved canvas management
     window.addEventListener('resize', () => {
-      this.engine.resize();
+      this.handleResize();
     });
 
     // Start render loop
@@ -82,11 +141,27 @@ export class GameEngine {
 
     // Setup input handling
     this.setupInputHandling();
+    
+    console.log('✅ Game engine initialized with enhanced quality settings');
+  }
+
+  private handleResize(): void {
+    // Update canvas size for new dimensions
+    this.setupCanvasForHighQuality();
+    
+    // Resize the engine
+    this.engine.resize();
+    
+    console.log('🔄 Canvas resized and engine updated');
   }
 
   private createScene(): void {
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color3(0.1, 0.1, 0.15).toColor4();
+    
+    // Enable better rendering options
+    this.scene.useRightHandedSystem = false;
+    this.scene.fogMode = Scene.FOGMODE_NONE; // Disable fog for better performance
   }
 
   private setupCamera(): void {
@@ -99,24 +174,54 @@ export class GameEngine {
     this.camera.setTarget(new Vector3(10, 0, 10));
     this.camera.attachControl(this.canvas, true);
     
-    // Camera limits not available for UniversalCamera
-    // Use ArcRotateCamera if limits are needed
+    // Enhanced camera settings for better quality
+    this.camera.minZ = 0.1;
+    this.camera.maxZ = 1000;
+    this.camera.fov = Math.PI / 3; // 60 degrees for good perspective
   }
 
   private setupLighting(): void {
-    const light1 = new HemisphericLight(
-      'light1',
+    // Main ambient light (softer)
+    const ambientLight = new HemisphericLight(
+      'ambientLight',
       new Vector3(0, 1, 0),
       this.scene
     );
-    light1.intensity = 0.8;
+    ambientLight.intensity = 0.4;
+    ambientLight.diffuse = new Color3(0.8, 0.9, 1.0); // Slightly blue tint
+    ambientLight.specular = new Color3(0.2, 0.2, 0.3);
 
-    const light2 = new HemisphericLight(
-      'light2',
-      new Vector3(0, -1, 0),
+    // Main directional light for shadows and definition
+    const directionalLight = new DirectionalLight(
+      'directionalLight',
+      new Vector3(-1, -2, -1),
       this.scene
     );
-    light2.intensity = 0.3;
+    directionalLight.intensity = 0.8;
+    directionalLight.diffuse = new Color3(1.0, 0.95, 0.8); // Warm sunlight
+    directionalLight.specular = new Color3(1.0, 1.0, 0.9);
+    
+    // Set up shadow casting
+    directionalLight.position = new Vector3(20, 40, 20);
+    directionalLight.setDirectionToTarget(Vector3.Zero());
+    
+    // Create shadow generator for better visual quality
+    this.shadowGenerator = new ShadowGenerator(1024, directionalLight);
+    this.shadowGenerator.useBlurExponentialShadowMap = true;
+    this.shadowGenerator.blurKernel = 32;
+    this.shadowGenerator.bias = 0.01;
+    
+    // Fill light from the opposite direction for better lighting balance
+    const fillLight = new DirectionalLight(
+      'fillLight',
+      new Vector3(1, -1, 1),
+      this.scene
+    );
+    fillLight.intensity = 0.3;
+    fillLight.diffuse = new Color3(0.6, 0.7, 0.9); // Cool fill light
+    fillLight.specular = new Color3(0.1, 0.1, 0.2);
+    
+    console.log('💡 Enhanced lighting setup with shadows');
   }
 
   private setupInputHandling(): void {
@@ -516,7 +621,7 @@ export class GameEngine {
     this.scene.dispose();
     this.engine.dispose();
     window.removeEventListener('resize', () => {
-      this.engine.resize();
+      this.handleResize();
     });
   }
 } 

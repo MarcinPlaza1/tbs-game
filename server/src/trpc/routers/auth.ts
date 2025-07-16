@@ -59,9 +59,9 @@ const getClientUserAgent = (req: any): string => {
   return req.headers['user-agent'] || 'unknown';
 };
 
-const generateTokenPair = async (userId: string, ipAddress?: string, userAgent?: string) => {
+const generateTokenPair = async (userId: string, username: string, ipAddress?: string, userAgent?: string) => {
   const accessToken = jwt.sign(
-    { userId },
+    { userId, username },
     env.JWT_SECRET,
     { expiresIn: '15m' } // Short-lived access token
   );
@@ -117,7 +117,7 @@ export const authRouter = router({
       // Generate token pair
       const ipAddress = getClientIP(ctx.req);
       const userAgent = getClientUserAgent(ctx.req);
-      const { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(newUser.id, ipAddress, userAgent);
+      const { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(newUser.id, newUser.username, ipAddress, userAgent);
 
       // Store refresh token in database
       await ctx.db.insert(refreshTokens).values({
@@ -173,7 +173,7 @@ export const authRouter = router({
       // Generate token pair
       const ipAddress = getClientIP(ctx.req);
       const userAgent = getClientUserAgent(ctx.req);
-      const { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(user.id, ipAddress, userAgent);
+      const { accessToken, refreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(user.id, user.username, ipAddress, userAgent);
 
       // Store refresh token in database
       await ctx.db.insert(refreshTokens).values({
@@ -266,7 +266,7 @@ export const authRouter = router({
       // Generate new token pair
       const ipAddress = getClientIP(ctx.req);
       const userAgent = getClientUserAgent(ctx.req);
-      const { accessToken, refreshToken: newRefreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(matchingTokenRecord.userId, ipAddress, userAgent);
+      const { accessToken, refreshToken: newRefreshToken, refreshTokenHash, refreshTokenExpiresAt } = await generateTokenPair(matchingTokenRecord.userId, matchingTokenRecord.user.username, ipAddress, userAgent);
 
       // Revoke old refresh token
       await ctx.db.update(refreshTokens)

@@ -22,6 +22,13 @@
       "when": 1752530931673,
       "tag": "0002_hot_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1752616436267,
+      "tag": "0003_nosy_eternity",
+      "breakpoints": true
     }
   ]
 }

@@ -4,11 +4,12 @@ import { Client, Room } from 'colyseus.js';
 import { GameEngine } from '../game/babylon/GameEngine';
 import { useAuthStore } from '../stores/authStore';
 import { trpc } from '../providers/TrpcProvider';
-import { ServerMessageType, ClientMessageType } from '@tbs/shared';
+import { ClientMessageType } from '@tbs/shared';
 
 function GamePage() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
+  const { user, token } = useAuthStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
   const roomRef = useRef<Room | null>(null);
@@ -70,9 +71,7 @@ function GamePage() {
   const [isGameReady, setIsGameReady] = useState(false);
   const [gameActivated, setGameActivated] = useState(false);
   const [showUI, setShowUI] = useState(true);
-  const [showTopBar, setShowTopBar] = useState(true);
   
-  const user = useAuthStore((state) => state.user);
   const { data: gameData } = trpc.game.get.useQuery({ gameId: gameId! });
 
   const addLog = (message: string) => {
@@ -80,12 +79,12 @@ function GamePage() {
     setConnectionLog(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`]);
   };
 
-  const attemptReconnection = async () => {
+  const attemptReconnection = async (gameName?: string) => {
     try {
+      const displayName = gameName || gameData?.map?.name || 'the game';
       addLog('🔄 Reconnecting to game...');
       
       const client = new Client('ws://localhost:2567');
-      const token = localStorage.getItem('auth_token');
       
       if (!token) {
         throw new Error('No authentication token found');
@@ -98,7 +97,7 @@ function GamePage() {
       
       roomRef.current = room;
       addLog('✅ Reconnected successfully!');
-      addGameLog('system', 'Reconnected to game successfully!', 'System', {
+      addGameLog('system', `Reconnected to "${displayName}" successfully!`, 'System', {
         event: 'reconnection_success'
       });
       
@@ -112,12 +111,13 @@ function GamePage() {
       setupRoomEventHandlers(room);
       
     } catch (error: any) {
+      const displayName = gameName || gameData?.map?.name || 'the game';
       addLog(`❌ Reconnection failed: ${error.message}`);
-      addGameLog('system', `Reconnection failed: ${error.message}`, 'System', {
+      addGameLog('system', `Failed to reconnect to "${displayName}": ${error.message}`, 'System', {
         event: 'reconnection_failed'
       });
       setTimeout(() => {
-        attemptReconnection();
+        attemptReconnection(gameName);
       }, 5000); // Try again in 5 seconds
          }
    };
@@ -191,7 +191,7 @@ function GamePage() {
     });
 
     room.onMessage('manual_state_update', (message) => {
-      const readyPlayers = message.players ? message.players.filter((p: any) => p.isReady).length : 0;
+      const readyPlayers = message.players && Array.isArray(message.players) ? message.players.filter((p: any) => p.isReady).length : 0;
       addLog(`📥 Manual state update - Players: ${message.playersCount}, Ready: ${readyPlayers}, Status: ${message.status}`);
       
       // Create a fake gameState for testing
@@ -208,13 +208,13 @@ function GamePage() {
       };
       
       // Add players with detailed logging
-      if (message.players) {
+      if (message.players && Array.isArray(message.players)) {
         message.players.forEach((player: any) => {
           fakeState.players[player.id] = player;
           addLog(`👤 Player state: ${player.username} - Ready: ${player.isReady}`);
         });
-        
-        setReadyPlayers(readyPlayers);
+      } else if (message.players) {
+        addLog(`⚠️ Received players data but it's not an array: ${typeof message.players}`);
       }
       
       setGameState(fakeState);
@@ -279,9 +279,10 @@ function GamePage() {
       
       // If disconnected unexpectedly, try to reconnect
       if (code !== 1000) { // 1000 = normal closure
-        addLog('🔄 Attempting to reconnect...');
+        const displayName = gameData?.map?.name;
+        addLog(`🔄 Attempting to reconnect to "${displayName || 'the game'}"...`);
         setTimeout(() => {
-          attemptReconnection();
+          attemptReconnection(displayName);
         }, 2000);
       } else {
         navigate('/lobby');
@@ -321,7 +322,8 @@ function GamePage() {
     if (!user || !gameId || roomRef.current || initializingRef.current) return; // Prevent multiple initializations
     
     // Add initial welcome message to game log
-    addGameLog('system', `Welcome to the game! Connecting to room ${gameId}...`, 'System', {
+    const gameName = gameData?.map?.name || 'Unknown Map';
+    addGameLog('system', `Welcome to the game! Connecting to "${gameName}"...`, 'System', {
       gameId,
       userId: user.id,
       event: 'connection_start'
@@ -362,8 +364,7 @@ function GamePage() {
         addLog('🌐 Connecting to Colyseus server...');
         const client = new Client('ws://localhost:2567');
         
-        // Get JWT token from localStorage
-        const token = localStorage.getItem('auth_token');
+        // Check if we have authentication token
         if (!token) {
           throw new Error('No authentication token found');
         }
@@ -378,7 +379,7 @@ function GamePage() {
         addLog(`✅ Connected to game room: ${room.id}`);
         
         // Add to game log
-        addGameLog('system', `Connected to game room successfully!`, 'System', {
+        addGameLog('system', `Connected to "${gameName}" successfully!`, 'System', {
           roomId: room.id,
           event: 'connection_success'
         });
@@ -630,6 +631,13 @@ function GamePage() {
         await engineRef.current.initialize();
         addLog('✅ 3D engine activated successfully!');
         setGameActivated(true);
+        
+        // Force resize after canvas becomes visible
+        setTimeout(() => {
+          if (engineRef.current) {
+            window.dispatchEvent(new Event('resize'));
+          }
+        }, 100);
       } else if (canvasRef.current) {
         // Try to create engine if it wasn't created before
         addLog('🔧 Creating and activating 3D engine...');
@@ -645,6 +653,13 @@ function GamePage() {
         await engineRef.current.initialize();
         addLog('✅ 3D engine created and activated!');
         setGameActivated(true);
+        
+        // Force resize after canvas becomes visible
+        setTimeout(() => {
+          if (engineRef.current) {
+            window.dispatchEvent(new Event('resize'));
+          }
+        }, 100);
       }
     } catch (error: any) {
       addLog(`⚠️ 3D engine activation failed: ${error.message} - continuing with 2D mode`);
@@ -661,7 +676,7 @@ function GamePage() {
     });
   };
 
-  if (isLoading) {
+  if (isLoading && !isGameReady) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center max-w-2xl">
@@ -709,61 +724,51 @@ function GamePage() {
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Minimal Game Controls Bar */}
-      {showTopBar && (
-        <div className="bg-gray-800 px-4 py-2 flex justify-between items-center">
-          <div className="flex gap-3">
-            <button 
-              onClick={handlePlayerReady} 
-              disabled={!isGameReady || gameActivated}
-              className={`px-4 py-1 rounded text-sm font-semibold transition-colors ${
-                !isGameReady 
-                  ? 'bg-gray-500 cursor-not-allowed text-gray-300' 
-                  : gameActivated 
-                    ? 'bg-green-600 text-white'
-                    : 'bg-blue-600 hover:bg-blue-700 text-white'
-              }`}
-            >
-              {gameActivated ? '✅ Ready' : !isGameReady ? '⏳ Loading...' : '🎮 Ready'}
-            </button>
-            <button 
-              onClick={handleEndTurn} 
-              disabled={!gameActivated || !engineRef.current?.isMyTurn()}
-              className={`px-4 py-1 rounded text-sm font-semibold transition-colors ${
-                gameActivated && engineRef.current?.isMyTurn()
-                  ? 'bg-red-600 hover:bg-red-700 text-white' 
-                  : 'bg-gray-500 cursor-not-allowed text-gray-300'
-              }`}
-            >
-              ⏭️ End Turn
-            </button>
-          </div>
-          
-          {/* Compact status info */}
-          <div className="text-white text-xs">
-            {gameActivated && gameState && (
-              <span>{gameState.status} | T:{gameState.turnNumber}</span>
-            )}
-            {!gameActivated && (
-              <span>{isGameReady ? 'Ready' : `${loadingProgress}%`}</span>
-            )}
-          </div>
+      {/* Always Visible Game Controls Bar */}
+      <div className="bg-gray-800 px-4 py-2 flex justify-between items-center">
+        <div className="flex gap-3">
+          <button 
+            onClick={handleEndTurn} 
+            disabled={!gameActivated || !engineRef.current?.isMyTurn()}
+            className={`px-4 py-1 rounded text-sm font-semibold transition-colors ${
+              gameActivated && engineRef.current?.isMyTurn()
+                ? 'bg-red-600 hover:bg-red-700 text-white' 
+                : 'bg-gray-500 cursor-not-allowed text-gray-300'
+            }`}
+          >
+            ⏭️ End Turn
+          </button>
         </div>
-      )}
+        
+        {/* Compact status info */}
+        <div className="text-white text-xs">
+          {gameActivated && gameState && (
+            <span>{gameState.status} | T:{gameState.turnNumber}</span>
+          )}
+          {!gameActivated && (
+            <span>{isGameReady ? 'Ready' : `${loadingProgress}%`}</span>
+          )}
+        </div>
+      </div>
       
       {/* Main Game Area */}
       <div className="flex flex-1">
         {/* Game Canvas */}
-        <div className="flex-1 relative bg-gray-900">
+        <div className="flex-1 flex items-center justify-center bg-gray-900">
           <canvas 
             ref={canvasRef} 
-            className="w-full h-full" 
-            style={{ display: gameActivated && engineRef.current ? 'block' : 'none' }} 
+            className="max-w-full max-h-full" 
+            style={{ 
+              display: gameActivated && engineRef.current ? 'block' : 'none',
+              width: '800px',
+              height: '600px',
+              backgroundColor: '#111827' // bg-gray-900 equivalent
+            }} 
           />
           
           {/* Loading Screen */}
           {!gameActivated && (
-            <div className="w-full h-full flex items-center justify-center text-white">
+            <div className="absolute inset-0 flex items-center justify-center text-white bg-gray-900">
               <div className="text-center max-w-md">
                 <h2 className="text-2xl font-bold mb-6">🗺️ Game Engine Loading</h2>
                 
@@ -798,7 +803,7 @@ function GamePage() {
           
           {/* Game Activated Screen */}
           {gameActivated && !engineRef.current && (
-            <div className="w-full h-full flex items-center justify-center text-white">
+            <div className="absolute inset-0 flex items-center justify-center text-white bg-gray-900">
               <div className="text-center">
                 <h2 className="text-2xl font-bold mb-4">🎮 Game Active</h2>
                 <p className="text-gray-400">Running in 2D mode</p>
@@ -808,22 +813,37 @@ function GamePage() {
           
           {/* UI Toggle Button */}
           <div className="absolute top-4 left-4">
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowUI(!showUI)}
-                className="bg-black bg-opacity-60 hover:bg-opacity-80 text-white p-2 rounded-lg text-xs backdrop-blur-sm transition-all"
-                title={showUI ? "Hide UI" : "Show UI"}
-              >
-                {showUI ? "👁️ Hide UI" : "👁️ Show UI"}
-              </button>
-              <button
-                onClick={() => setShowTopBar(!showTopBar)}
-                className="bg-black bg-opacity-60 hover:bg-opacity-80 text-white p-2 rounded-lg text-xs backdrop-blur-sm transition-all"
-                title={showTopBar ? "Hide Controls" : "Show Controls"}
-              >
-                {showTopBar ? "⬆️ Hide Bar" : "⬆️ Show Bar"}
-              </button>
-            </div>
+            <button
+              onClick={() => setShowUI(!showUI)}
+              className="bg-black bg-opacity-60 hover:bg-opacity-80 text-white p-2 rounded-lg text-xs backdrop-blur-sm transition-all"
+              title={showUI ? "Hide UI" : "Show UI"}
+            >
+              {showUI ? "👁️ Hide UI" : "👁️ Show UI"}
+            </button>
+          </div>
+
+          {/* Ready Button */}
+          <div className="absolute top-4 left-1/2 transform -translate-x-1/2">
+            <button
+              onClick={handlePlayerReady}
+              disabled={!isGameReady || gameActivated}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold backdrop-blur-sm transition-all ${
+                !isGameReady 
+                  ? 'bg-gray-700 bg-opacity-60 cursor-not-allowed text-gray-400' 
+                  : gameActivated 
+                    ? 'bg-green-700 bg-opacity-80 text-green-200'
+                    : 'bg-blue-700 bg-opacity-80 hover:bg-blue-600 hover:bg-opacity-90 text-white'
+              }`}
+              title={
+                !isGameReady 
+                  ? 'Game engine is loading...' 
+                  : gameActivated 
+                    ? 'Already ready!' 
+                    : 'Click to join the game'
+              }
+            >
+              {gameActivated ? '✅ Ready' : !isGameReady ? '⏳ Loading...' : '🎮 Ready'}
+            </button>
           </div>
 
           {showUI && (
@@ -868,7 +888,8 @@ function GamePage() {
           )}
         </div>
 
-        {/* Sidebar */}
+        {/* Sidebar - Hidden for now, will be repositioned when game loads */}
+        {false && (
         <div className="w-80 bg-game-secondary flex flex-col">
           {/* Turn Info */}
           {gameState && (
@@ -879,11 +900,11 @@ function GamePage() {
               </div>
               {engineRef.current && (
                 <div className={`text-sm p-2 rounded ${
-                  engineRef.current.isMyTurn() 
+                  engineRef.current!.isMyTurn() 
                     ? 'bg-green-800 text-green-200' 
                     : 'bg-gray-700 text-gray-300'
                 }`}>
-                  {engineRef.current.isMyTurn() ? '🎯 Your turn!' : '⏳ Waiting...'}
+                  {engineRef.current!.isMyTurn() ? '🎯 Your turn!' : '⏳ Waiting...'}
                 </div>
               )}
             </div>
@@ -1082,6 +1103,7 @@ function GamePage() {
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

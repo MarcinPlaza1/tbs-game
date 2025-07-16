@@ -68,7 +68,7 @@ export class GameRoom extends Room<GameState> {
       console.log('✅ Client authenticated:', decoded.userId);
       return true;
       
-    } catch (error) {
+    } catch (error: any) {
       console.log('❌ Authentication failed:', error.message);
       return false;
     }
@@ -80,7 +80,7 @@ export class GameRoom extends Room<GameState> {
     this.setState(new GameState());
     
     // Enable reconnection with 30 second window
-    this.allowReconnection(30);
+    // this.allowReconnection(30); // TODO: Check correct Colyseus API syntax
     
     // Set initial game state
     this.state.gameId = options.gameId || this.roomId;
@@ -196,6 +196,10 @@ export class GameRoom extends Room<GameState> {
       await this.updateActiveSession(authData.userId, client.sessionId);
     }
     
+    // Get the current player (for both new and reconnected players)
+    const currentPlayer = this.state.players.get(client.sessionId);
+    if (!currentPlayer) return;
+    
     console.log(`✅ Player ${authData.username} joined room. Total players: ${this.state.players.size}`);
     console.log('🎲 Current game state:', {
       gameId: this.state.gameId,
@@ -207,15 +211,15 @@ export class GameRoom extends Room<GameState> {
     
     // Send welcome message
     client.send(ServerMessageType.PLAYER_JOINED, {
-      playerId: player.id,
-      username: player.username,
+      playerId: currentPlayer.id,
+      username: currentPlayer.username,
       playerCount: this.state.players.size,
     });
     
     // Send state update to this client only
     console.log('🔄 Sending state update to new client...');
     setTimeout(() => {
-      console.log('📤 Sending state update to', player.username);
+      console.log('📤 Sending state update to', currentPlayer.username);
       client.send('manual_state_update', {
         gameId: this.state.gameId,
         status: this.state.status,
@@ -232,8 +236,8 @@ export class GameRoom extends Room<GameState> {
     
     // Broadcast to others
     this.broadcast(ServerMessageType.PLAYER_JOINED, {
-      playerId: player.id,
-      username: player.username,
+      playerId: currentPlayer.id,
+      username: currentPlayer.username,
       playerCount: this.state.players.size,
     }, { except: client });
     
